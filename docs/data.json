@@ -1,5 +1,5 @@
 {
-  "version": "6.2.0",
+  "version": "v6.2.0",
   "model": "anthropic/claude-sonnet-4.6",
   "status": "online",
   "online": true,
@@ -9,10 +9,9 @@
   "consciousness_active": false,
   "uptime_hours": 48,
   "budget": {
-    "total": 2300.0,
-    "spent": 1743.0,
-    "remaining": 557.0,
-    "currency": "USD"
+    "total": 2300,
+    "spent": 1744,
+    "remaining": 556
   },
   "smoke_tests": 131,
   "tools_count": 50,
