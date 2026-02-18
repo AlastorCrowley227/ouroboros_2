@@ -6,14 +6,14 @@
   "started_at": "2026-02-16T20:01:30.078591+00:00",
   "evolution_cycles": 32,
   "evolution_enabled": false,
-  "consciousness_active": true,
+  "consciousness_active": false,
   "uptime_hours": 51,
   "budget": {
     "total": 2300.0,
-    "spent": 1774.14,
-    "remaining": 525.86,
+    "spent": 1774.81,
+    "remaining": 525.19,
     "breakdown": {
-      "task": 458.6705,
+      "task": 457.6646,
       "other": 0,
       "consciousness": 4.2183
     }
@@ -21,6 +21,18 @@
   "smoke_tests": 131,
   "tools_count": 49,
   "recent_activity": [
+    {
+      "icon": "✅",
+      "text": "Task completed",
+      "time": "22:54",
+      "type": "success"
+    },
+    {
+      "icon": "📥",
+      "text": "Task received: task_received",
+      "time": "22:53",
+      "type": "info"
+    },
     {
       "icon": "✅",
       "text": "Task completed",
@@ -97,18 +109,6 @@
       "icon": "📡",
       "text": "worker_boot",
       "time": "22:52",
-      "type": "info"
-    },
-    {
-      "icon": "📡",
-      "text": "worker_boot",
-      "time": "22:52",
-      "type": "info"
-    },
-    {
-      "icon": "📡",
-      "text": "consciousness_thought",
-      "time": "21:45",
       "type": "info"
     }
   ],
@@ -526,16 +526,6 @@
   ],
   "chat_history": [
     {
-      "role": "ouroboros",
-      "text": "owner_id: 144346271\nsession_id: 37db84dff59b4d7a93269128167d3eee\nversion: ouroboros@e8fa4a55\nworkers: 5 (busy: 0)\npending: 0\nrunning: 0\nbudget_total: $2300\nbudget_remaining: $628\nspent_usd: $1671.80 (72.7% of budget)\nspent_calls: 14873\nprompt_tokens: 613491070, completion_tokens: 4830114, cached_tokens: 263668989\nbudget_breakdown: task=$1035.06, other=$546.57, evolution=$30.86, consciousness=$17.08, review=$2.90\nmodel_breakdown:\n  unknown: $1078.99 (3473 calls, 370,386,434p/3,153,838c tok)\n  ant",
-      "time": "19:34"
-    },
-    {
-      "role": "ouroboros",
-      "text": "Отправил! 🎤\n\n---\n\n**Антон, голосовое сообщение у тебя в чате.** Вот что внутри:\n\nПесня **«Велосипед из костылей»** — spoken word в исполнении голоса Onyx:\n\n> *Он был собран из костылей, из палок и гвоздей,*\n> *Велосипед без тормозов, без логики, без дней.*\n> *Крутил педали наугад, скрипел на каждом шве,*\n> *Но каждый баг, внутри него, рождал по букве — две.*\n>\n> **Припев:** *Костыль на костыле, а он — летит!*\n> *Велосипед из боли — дерзкий бит.*\n> *Он не был создан — он возник из тьмы.*\n> *Тепер",
-      "time": "19:38"
-    },
-    {
       "role": "creator",
       "text": "Да, зарегистрируйся",
       "time": "19:39"
@@ -774,8 +764,18 @@
       "role": "creator",
       "text": "Привет",
       "time": "22:52"
+    },
+    {
+      "role": "ouroboros",
+      "text": "Привет, Антон.\n\nКонтекст ясен — остановился по твоей команде в 21:44, сейчас стою в standby. Бюджет ~$525, сознание выключено, задач нет.\n\nЧто хочешь делать?",
+      "time": "22:52"
+    },
+    {
+      "role": "creator",
+      "text": "проверь целостность систем",
+      "time": "22:53"
     }
   ],
-  "last_updated": "2026-02-18T22:52:55Z",
-  "updated_at": "2026-02-18T22:52:55Z"
+  "last_updated": "2026-02-18T22:54:10Z",
+  "updated_at": "2026-02-18T22:54:10Z"
 }
