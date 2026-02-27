@@ -327,7 +327,7 @@ def sync_runtime_dependencies(reason: str) -> Tuple[bool, str]:
         cmd += ["-r", str(req_path)]
         source = f"requirements:{req_path}"
     else:
-        cmd += ["openai>=1.0.0", "requests"]
+        cmd += ["requests"]
         source = "fallback:minimal"
     try:
         subprocess.run(cmd, cwd=str(REPO_DIR), check=True)
