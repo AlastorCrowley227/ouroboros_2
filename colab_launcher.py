@@ -6,7 +6,7 @@
 
 import logging
 import os, sys, json, time, uuid, pathlib, subprocess, datetime, threading, queue as _queue_mod
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 log = logging.getLogger(__name__)
 
@@ -50,36 +50,17 @@ install_apply_patch()
 # ----------------------------
 # 1) Secrets + runtime config
 # ----------------------------
-from google.colab import userdata  # type: ignore
-from google.colab import drive  # type: ignore
-
-_LEGACY_CFG_WARNED: Set[str] = set()
-
-def _userdata_get(name: str) -> Optional[str]:
-    try:
-        return userdata.get(name)
-    except Exception:
-        return None
-
 def get_secret(name: str, default: Optional[str] = None, required: bool = False) -> Optional[str]:
-    v = _userdata_get(name)
-    if v is None or str(v).strip() == "":
-        v = os.environ.get(name, default)
+    v = os.environ.get(name, default)
     if required:
         assert v is not None and str(v).strip() != "", f"Missing required secret: {name}"
     return v
 
 def get_cfg(name: str, default: Optional[str] = None, allow_legacy_secret: bool = False) -> Optional[str]:
+    _ = allow_legacy_secret
     v = os.environ.get(name)
     if v is not None and str(v).strip() != "":
         return v
-    if allow_legacy_secret:
-        legacy = _userdata_get(name)
-        if legacy is not None and str(legacy).strip() != "":
-            if name not in _LEGACY_CFG_WARNED:
-                print(f"[cfg] DEPRECATED: move {name} from Colab Secrets to config cell/env.")
-                _LEGACY_CFG_WARNED.add(name)
-            return legacy
     return default
 
 
@@ -95,8 +76,7 @@ TELEGRAM_BOT_TOKEN = get_secret("TELEGRAM_BOT_TOKEN", required=True)
 TOTAL_BUDGET_DEFAULT = get_secret("TOTAL_BUDGET", required=True)
 GITHUB_TOKEN = get_secret("GITHUB_TOKEN", required=True)
 
-# Robust TOTAL_BUDGET parsing — handles \r\n, spaces, and other junk from Colab Secrets
-# Example: user enters "8 800" → Colab stores as "8\r\n800" → we need 8800
+# Robust TOTAL_BUDGET parsing for env values with accidental spaces/newlines
 try:
     import re
     _raw_budget = str(TOTAL_BUDGET_DEFAULT or "")
@@ -150,17 +130,17 @@ if str(ANTHROPIC_API_KEY or "").strip():
     ensure_claude_code_cli()
 
 # ----------------------------
-# 2) Mount Drive
+# 2) Local filesystem layout
 # ----------------------------
-if not pathlib.Path("/content/drive/MyDrive").exists():
-    drive.mount("/content/drive")
-
-DRIVE_ROOT = pathlib.Path("/content/drive/MyDrive/Ouroboros").resolve()
-REPO_DIR = pathlib.Path("/content/ouroboros_repo").resolve()
+DRIVE_ROOT = pathlib.Path(os.environ.get("OUROBOROS_HOME", str(pathlib.Path.home() / ".ouroboros"))).expanduser().resolve()
+REPO_DIR = pathlib.Path(os.environ.get("OUROBOROS_REPO_DIR", os.getcwd())).expanduser().resolve()
+os.environ["OUROBOROS_HOME"] = str(DRIVE_ROOT)
+os.environ["OUROBOROS_REPO_DIR"] = str(REPO_DIR)
 
 for sub in ["state", "logs", "memory", "index", "locks", "archive"]:
     (DRIVE_ROOT / sub).mkdir(parents=True, exist_ok=True)
 REPO_DIR.mkdir(parents=True, exist_ok=True)
+os.environ.setdefault("OUROBOROS_LAUNCHER_PATH", str(pathlib.Path(__file__).resolve()))
 
 # Clear stale owner mailbox files from previous session
 try:
