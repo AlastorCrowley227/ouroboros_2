@@ -1,4 +1,5 @@
 import json
+import os
 
 import pytest
 
@@ -32,3 +33,16 @@ def test_load_runtime_config_gitea_requires_endpoint(tmp_path):
     })
     with pytest.raises(AssertionError):
         load_runtime_config(str(cfg))
+
+
+def test_load_runtime_config_exports_ollama_env(tmp_path):
+    cfg = _write_cfg(tmp_path, {
+        "telegram_bot_token": "tg",
+        "vcs_platform": "git",
+        "ollama_base_url": "http://localhost:11434",
+        "ollama_api_key": "secret",
+    })
+    rc = load_runtime_config(str(cfg))
+    rc.export_env()
+    assert os.environ.get("OLLAMA_BASE_URL") == "http://localhost:11434"
+    assert os.environ.get("OLLAMA_API_KEY") == "secret"

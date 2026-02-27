@@ -18,6 +18,8 @@ class RuntimeConfig:
     gitea_base_url: str = ""
     git_remote_url: str = ""
     anthropic_api_key: str = ""
+    ollama_base_url: str = "http://127.0.0.1:11434"
+    ollama_api_key: str = ""
     total_budget: float = 0.0
     ouroboros_home: str = str(Path.home() / ".ouroboros")
     ouroboros_repo_dir: str = ""
@@ -43,6 +45,8 @@ class RuntimeConfig:
         if self.git_remote_url:
             os.environ["GIT_REMOTE_URL"] = self.git_remote_url
         os.environ["ANTHROPIC_API_KEY"] = self.anthropic_api_key
+        os.environ["OLLAMA_BASE_URL"] = self.ollama_base_url
+        os.environ["OLLAMA_API_KEY"] = self.ollama_api_key
         os.environ["TOTAL_BUDGET"] = str(self.total_budget)
         os.environ["OUROBOROS_HOME"] = self.ouroboros_home
         os.environ["OUROBOROS_REPO_DIR"] = self.ouroboros_repo_dir
@@ -120,6 +124,8 @@ def load_runtime_config(path: Optional[str] = None) -> RuntimeConfig:
         gitea_base_url=gitea_base_url,
         git_remote_url=git_remote_url,
         anthropic_api_key=str(data.get("anthropic_api_key", "")),
+        ollama_base_url=str(data.get("ollama_base_url", "http://127.0.0.1:11434")).strip() or "http://127.0.0.1:11434",
+        ollama_api_key=str(data.get("ollama_api_key", "")),
         total_budget=_float(data, "total_budget", 0.0),
         ouroboros_home=home_dir,
         ouroboros_repo_dir=repo_dir,
