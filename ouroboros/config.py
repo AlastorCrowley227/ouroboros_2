@@ -18,8 +18,8 @@ class RuntimeConfig:
     gitea_base_url: str = ""
     git_remote_url: str = ""
     anthropic_api_key: str = ""
-    openrouter_api_key: str = ""
-    openai_api_key: str = ""
+    ollama_base_url: str = "http://127.0.0.1:11434"
+    ollama_api_key: str = ""
     total_budget: float = 0.0
     ouroboros_home: str = str(Path.home() / ".ouroboros")
     ouroboros_repo_dir: str = ""
@@ -27,7 +27,6 @@ class RuntimeConfig:
     model: str = "qwen2.5:14b"
     model_code: str = "qwen2.5:14b"
     model_light: str = "google/gemini-3-pro-preview"
-    websearch_model: str = "gpt-5"
     max_rounds: int = 200
     soft_timeout_sec: int = 600
     hard_timeout_sec: int = 1800
@@ -46,10 +45,9 @@ class RuntimeConfig:
         if self.git_remote_url:
             os.environ["GIT_REMOTE_URL"] = self.git_remote_url
         os.environ["ANTHROPIC_API_KEY"] = self.anthropic_api_key
-        if self.openrouter_api_key:
-            os.environ["OPENROUTER_API_KEY"] = self.openrouter_api_key
-        if self.openai_api_key:
-            os.environ["OPENAI_API_KEY"] = self.openai_api_key
+        os.environ["OLLAMA_BASE_URL"] = self.ollama_base_url
+        if self.ollama_api_key:
+            os.environ["OLLAMA_API_KEY"] = self.ollama_api_key
         os.environ["TOTAL_BUDGET"] = str(self.total_budget)
         os.environ["OUROBOROS_HOME"] = self.ouroboros_home
         os.environ["OUROBOROS_REPO_DIR"] = self.ouroboros_repo_dir
@@ -57,7 +55,6 @@ class RuntimeConfig:
         os.environ["OUROBOROS_MODEL"] = self.model
         os.environ["OUROBOROS_MODEL_CODE"] = self.model_code
         os.environ["OUROBOROS_MODEL_LIGHT"] = self.model_light
-        os.environ["OUROBOROS_WEBSEARCH_MODEL"] = self.websearch_model
         os.environ["OUROBOROS_MAX_ROUNDS"] = str(self.max_rounds)
         os.environ["OUROBOROS_SOFT_TIMEOUT_SEC"] = str(self.soft_timeout_sec)
         os.environ["OUROBOROS_HARD_TIMEOUT_SEC"] = str(self.hard_timeout_sec)
@@ -128,8 +125,8 @@ def load_runtime_config(path: Optional[str] = None) -> RuntimeConfig:
         gitea_base_url=gitea_base_url,
         git_remote_url=git_remote_url,
         anthropic_api_key=str(data.get("anthropic_api_key", "")),
-        openrouter_api_key=str(data.get("openrouter_api_key", "")),
-        openai_api_key=str(data.get("openai_api_key", "")),
+        ollama_base_url=str(data.get("ollama_base_url", "http://127.0.0.1:11434")),
+        ollama_api_key=str(data.get("ollama_api_key", "")),
         total_budget=_float(data, "total_budget", 0.0),
         ouroboros_home=home_dir,
         ouroboros_repo_dir=repo_dir,
@@ -137,7 +134,6 @@ def load_runtime_config(path: Optional[str] = None) -> RuntimeConfig:
         model=str(data.get("model", "qwen2.5:14b")),
         model_code=str(data.get("model_code", "qwen2.5:14b")),
         model_light=str(data.get("model_light", "google/gemini-3-pro-preview")),
-        websearch_model=str(data.get("websearch_model", "gpt-5")),
         max_rounds=_int(data, "max_rounds", 200, minimum=1),
         soft_timeout_sec=_int(data, "soft_timeout_sec", 600, minimum=60),
         hard_timeout_sec=_int(data, "hard_timeout_sec", 1800, minimum=120),
