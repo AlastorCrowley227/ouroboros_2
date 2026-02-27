@@ -5,7 +5,7 @@
 # Heavy logic lives in supervisor/ package.
 
 import logging
-import os, sys, json, time, uuid, pathlib, subprocess, datetime, threading, queue as _queue_mod
+import os, sys, time, uuid, pathlib, subprocess, datetime, threading, queue as _queue_mod
 from typing import Any, Dict, List, Optional, Tuple
 
 log = logging.getLogger(__name__)
@@ -44,60 +44,32 @@ def ensure_claude_code_cli() -> bool:
 # 0.1) provide apply_patch shim
 # ----------------------------
 from ouroboros.apply_patch import install as install_apply_patch
+from ouroboros.config import load_runtime_config
 from ouroboros.llm import DEFAULT_LIGHT_MODEL
 install_apply_patch()
 
 # ----------------------------
-# 1) Secrets + runtime config
+# 1) Runtime config
 # ----------------------------
-def get_secret(name: str, default: Optional[str] = None, required: bool = False) -> Optional[str]:
-    v = os.environ.get(name, default)
-    if required:
-        assert v is not None and str(v).strip() != "", f"Missing required secret: {name}"
-    return v
+RUNTIME_CONFIG = load_runtime_config()
+RUNTIME_CONFIG.export_env()
 
-def get_cfg(name: str, default: Optional[str] = None, allow_legacy_secret: bool = False) -> Optional[str]:
-    _ = allow_legacy_secret
-    v = os.environ.get(name)
-    if v is not None and str(v).strip() != "":
-        return v
-    return default
-
-
-def _parse_int_cfg(raw: Optional[str], default: int, minimum: int = 0) -> int:
-    try:
-        val = int(str(raw))
-    except Exception:
-        val = default
-    return max(minimum, val)
-
-TELEGRAM_BOT_TOKEN = get_secret("TELEGRAM_BOT_TOKEN", required=True)
-GITHUB_TOKEN = get_secret("GITHUB_TOKEN", required=True)
-TOTAL_BUDGET_LIMIT = 0.0
-
-ANTHROPIC_API_KEY = get_secret("ANTHROPIC_API_KEY", default="")
-GITHUB_USER = get_cfg("GITHUB_USER", default=None, allow_legacy_secret=True)
-GITHUB_REPO = get_cfg("GITHUB_REPO", default=None, allow_legacy_secret=True)
-assert GITHUB_USER and str(GITHUB_USER).strip(), "GITHUB_USER not set. Add it to your config cell (see README)."
-assert GITHUB_REPO and str(GITHUB_REPO).strip(), "GITHUB_REPO not set. Add it to your config cell (see README)."
-MAX_WORKERS = int(get_cfg("OUROBOROS_MAX_WORKERS", default="5", allow_legacy_secret=True) or "5")
-MODEL_MAIN = get_cfg("OUROBOROS_MODEL", default="qwen2.5:14b", allow_legacy_secret=True)
-MODEL_CODE = get_cfg("OUROBOROS_MODEL_CODE", default="qwen2.5:14b", allow_legacy_secret=True)
-MODEL_LIGHT = get_cfg("OUROBOROS_MODEL_LIGHT", default=DEFAULT_LIGHT_MODEL, allow_legacy_secret=True)
+TELEGRAM_BOT_TOKEN = RUNTIME_CONFIG.telegram_bot_token
+GITHUB_TOKEN = RUNTIME_CONFIG.github_token
+TOTAL_BUDGET_LIMIT = float(RUNTIME_CONFIG.total_budget)
+ANTHROPIC_API_KEY = RUNTIME_CONFIG.anthropic_api_key
+GITHUB_USER = RUNTIME_CONFIG.github_user
+GITHUB_REPO = RUNTIME_CONFIG.github_repo
+MAX_WORKERS = int(RUNTIME_CONFIG.max_workers)
+MODEL_MAIN = RUNTIME_CONFIG.model or "qwen2.5:14b"
+MODEL_CODE = RUNTIME_CONFIG.model_code or "qwen2.5:14b"
+MODEL_LIGHT = RUNTIME_CONFIG.model_light or DEFAULT_LIGHT_MODEL
 
 BUDGET_REPORT_EVERY_MESSAGES = 0
-SOFT_TIMEOUT_SEC = max(60, int(get_cfg("OUROBOROS_SOFT_TIMEOUT_SEC", default="600", allow_legacy_secret=True) or "600"))
-HARD_TIMEOUT_SEC = max(120, int(get_cfg("OUROBOROS_HARD_TIMEOUT_SEC", default="1800", allow_legacy_secret=True) or "1800"))
-DIAG_HEARTBEAT_SEC = _parse_int_cfg(
-    get_cfg("OUROBOROS_DIAG_HEARTBEAT_SEC", default="30", allow_legacy_secret=True),
-    default=30,
-    minimum=0,
-)
-DIAG_SLOW_CYCLE_SEC = _parse_int_cfg(
-    get_cfg("OUROBOROS_DIAG_SLOW_CYCLE_SEC", default="20", allow_legacy_secret=True),
-    default=20,
-    minimum=0,
-)
+SOFT_TIMEOUT_SEC = max(60, int(RUNTIME_CONFIG.soft_timeout_sec))
+HARD_TIMEOUT_SEC = max(120, int(RUNTIME_CONFIG.hard_timeout_sec))
+DIAG_HEARTBEAT_SEC = max(0, int(RUNTIME_CONFIG.diag_heartbeat_sec))
+DIAG_SLOW_CYCLE_SEC = max(0, int(RUNTIME_CONFIG.diag_slow_cycle_sec))
 
 os.environ["ANTHROPIC_API_KEY"] = str(ANTHROPIC_API_KEY or "")
 os.environ["GITHUB_USER"] = str(GITHUB_USER)
@@ -116,8 +88,8 @@ if str(ANTHROPIC_API_KEY or "").strip():
 # ----------------------------
 # 2) Local filesystem layout
 # ----------------------------
-DRIVE_ROOT = pathlib.Path(os.environ.get("OUROBOROS_HOME", str(pathlib.Path.home() / ".ouroboros"))).expanduser().resolve()
-REPO_DIR = pathlib.Path(os.environ.get("OUROBOROS_REPO_DIR", os.getcwd())).expanduser().resolve()
+DRIVE_ROOT = pathlib.Path(RUNTIME_CONFIG.ouroboros_home).expanduser().resolve()
+REPO_DIR = pathlib.Path(RUNTIME_CONFIG.ouroboros_repo_dir).expanduser().resolve()
 os.environ["OUROBOROS_HOME"] = str(DRIVE_ROOT)
 os.environ["OUROBOROS_REPO_DIR"] = str(REPO_DIR)
 

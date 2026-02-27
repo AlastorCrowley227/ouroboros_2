@@ -1,0 +1,115 @@
+import json
+import os
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+
+DEFAULT_CONFIG_PATH = Path("ouroboros.config.json")
+
+
+@dataclass(frozen=True)
+class RuntimeConfig:
+    telegram_bot_token: str
+    github_token: str
+    github_user: str
+    github_repo: str
+    anthropic_api_key: str = ""
+    openrouter_api_key: str = ""
+    openai_api_key: str = ""
+    total_budget: float = 0.0
+    ouroboros_home: str = str(Path.home() / ".ouroboros")
+    ouroboros_repo_dir: str = ""
+    max_workers: int = 5
+    model: str = "qwen2.5:14b"
+    model_code: str = "qwen2.5:14b"
+    model_light: str = "google/gemini-3-pro-preview"
+    websearch_model: str = "gpt-5"
+    max_rounds: int = 200
+    soft_timeout_sec: int = 600
+    hard_timeout_sec: int = 1800
+    diag_heartbeat_sec: int = 30
+    diag_slow_cycle_sec: int = 20
+    worker_start_method: str = "fork"
+
+    def export_env(self) -> None:
+        os.environ["TELEGRAM_BOT_TOKEN"] = self.telegram_bot_token
+        os.environ["GITHUB_TOKEN"] = self.github_token
+        os.environ["GITHUB_USER"] = self.github_user
+        os.environ["GITHUB_REPO"] = self.github_repo
+        os.environ["ANTHROPIC_API_KEY"] = self.anthropic_api_key
+        if self.openrouter_api_key:
+            os.environ["OPENROUTER_API_KEY"] = self.openrouter_api_key
+        if self.openai_api_key:
+            os.environ["OPENAI_API_KEY"] = self.openai_api_key
+        os.environ["TOTAL_BUDGET"] = str(self.total_budget)
+        os.environ["OUROBOROS_HOME"] = self.ouroboros_home
+        os.environ["OUROBOROS_REPO_DIR"] = self.ouroboros_repo_dir
+        os.environ["OUROBOROS_MAX_WORKERS"] = str(self.max_workers)
+        os.environ["OUROBOROS_MODEL"] = self.model
+        os.environ["OUROBOROS_MODEL_CODE"] = self.model_code
+        os.environ["OUROBOROS_MODEL_LIGHT"] = self.model_light
+        os.environ["OUROBOROS_WEBSEARCH_MODEL"] = self.websearch_model
+        os.environ["OUROBOROS_MAX_ROUNDS"] = str(self.max_rounds)
+        os.environ["OUROBOROS_SOFT_TIMEOUT_SEC"] = str(self.soft_timeout_sec)
+        os.environ["OUROBOROS_HARD_TIMEOUT_SEC"] = str(self.hard_timeout_sec)
+        os.environ["OUROBOROS_DIAG_HEARTBEAT_SEC"] = str(self.diag_heartbeat_sec)
+        os.environ["OUROBOROS_DIAG_SLOW_CYCLE_SEC"] = str(self.diag_slow_cycle_sec)
+        os.environ["OUROBOROS_WORKER_START_METHOD"] = self.worker_start_method
+
+
+def _required(data: Dict[str, Any], key: str) -> str:
+    val = str(data.get(key, "")).strip()
+    if not val:
+        raise AssertionError(f"Missing required config key: {key}")
+    return val
+
+
+def _int(data: Dict[str, Any], key: str, default: int, minimum: int = 0) -> int:
+    try:
+        val = int(data.get(key, default))
+    except Exception:
+        val = default
+    return max(minimum, val)
+
+
+def _float(data: Dict[str, Any], key: str, default: float) -> float:
+    try:
+        return float(data.get(key, default))
+    except Exception:
+        return default
+
+
+def load_runtime_config(path: Optional[str] = None) -> RuntimeConfig:
+    cfg_path = Path(path or os.environ.get("OUROBOROS_CONFIG", str(DEFAULT_CONFIG_PATH))).expanduser().resolve()
+    if not cfg_path.exists():
+        raise FileNotFoundError(f"Config file not found: {cfg_path}")
+
+    data = json.loads(cfg_path.read_text(encoding="utf-8"))
+
+    repo_dir = str(Path(data.get("ouroboros_repo_dir") or Path.cwd()).expanduser().resolve())
+    home_dir = str(Path(data.get("ouroboros_home") or (Path.home() / ".ouroboros")).expanduser().resolve())
+
+    return RuntimeConfig(
+        telegram_bot_token=_required(data, "telegram_bot_token"),
+        github_token=_required(data, "github_token"),
+        github_user=_required(data, "github_user"),
+        github_repo=_required(data, "github_repo"),
+        anthropic_api_key=str(data.get("anthropic_api_key", "")),
+        openrouter_api_key=str(data.get("openrouter_api_key", "")),
+        openai_api_key=str(data.get("openai_api_key", "")),
+        total_budget=_float(data, "total_budget", 0.0),
+        ouroboros_home=home_dir,
+        ouroboros_repo_dir=repo_dir,
+        max_workers=_int(data, "max_workers", 5, minimum=1),
+        model=str(data.get("model", "qwen2.5:14b")),
+        model_code=str(data.get("model_code", "qwen2.5:14b")),
+        model_light=str(data.get("model_light", "google/gemini-3-pro-preview")),
+        websearch_model=str(data.get("websearch_model", "gpt-5")),
+        max_rounds=_int(data, "max_rounds", 200, minimum=1),
+        soft_timeout_sec=_int(data, "soft_timeout_sec", 600, minimum=60),
+        hard_timeout_sec=_int(data, "hard_timeout_sec", 1800, minimum=120),
+        diag_heartbeat_sec=_int(data, "diag_heartbeat_sec", 30, minimum=0),
+        diag_slow_cycle_sec=_int(data, "diag_slow_cycle_sec", 20, minimum=0),
+        worker_start_method=str(data.get("worker_start_method", "fork")).strip() or "fork",
+    )
