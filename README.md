@@ -1,8 +1,7 @@
 # Ouroboros
 
-> **New version available:** [Ouroboros Desktop](https://github.com/joi-lab/ouroboros-desktop) — native macOS app with web UI and local model support. This repo is the original Colab/Telegram version.
+> **New version available:** [Ouroboros Desktop](https://github.com/joi-lab/ouroboros-desktop) — native macOS app with web UI and local model support. This repo runs as a local Telegram runtime.
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/joi-lab/ouroboros/blob/main/notebooks/quickstart.ipynb)
 [![Telegram](https://img.shields.io/badge/Telegram-blue?logo=telegram)](https://t.me/abstractDL)
 [![X (Twitter)](https://img.shields.io/badge/X-updates-black?logo=x)](https://x.com/abstractdl)
 [![GitHub stars](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fapi.github.com%2Frepos%2Fjoi-lab%2Fouroboros&query=%24.stargazers_count&label=stars&logo=github)](https://github.com/joi-lab/ouroboros/stargazers)
@@ -33,7 +32,7 @@ Most AI agents execute tasks. Ouroboros **creates itself.**
 ## Architecture
 
 ```
-Telegram --> colab_launcher.py
+Telegram --> colab_launcher.py (local runtime)
                 |
             supervisor/              (process management)
               state.py              -- state, budget tracking
@@ -65,7 +64,7 @@ Telegram --> colab_launcher.py
 
 ---
 
-## Quick Start (Google Colab)
+## Quick Start (Local)
 
 ### Step 1: Create a Telegram Bot
 
@@ -85,55 +84,36 @@ Telegram --> colab_launcher.py
 | `OPENAI_API_KEY` | No | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) -- Enables web search tool |
 | `ANTHROPIC_API_KEY` | No | [console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys) -- Enables Claude Code CLI |
 
-### Step 3: Set Up Google Colab
+### Step 3: Configure Local Environment
 
-1. Open a new notebook at [colab.research.google.com](https://colab.research.google.com/).
-2. Go to the menu: **Runtime > Change runtime type** and select a **GPU** (optional, but recommended for browser automation).
-3. Click the **key icon** in the left sidebar (Secrets) and add each API key from the table above. Make sure "Notebook access" is toggled on for each secret.
+Set required environment variables in your shell:
 
-### Step 4: Fork and Run
+```bash
+export OPENROUTER_API_KEY=...
+export TELEGRAM_BOT_TOKEN=...
+export TOTAL_BUDGET=50
+export GITHUB_TOKEN=...
+export GITHUB_USER=your_username
+export GITHUB_REPO=ouroboros
+# optional
+export OPENAI_API_KEY=...
+export ANTHROPIC_API_KEY=...
+export OUROBOROS_HOME=~/.ouroboros
+export OUROBOROS_REPO_DIR=$(pwd)
+```
 
-1. **Fork** this repository on GitHub: click the **Fork** button at the top of the page.
-2. Paste the following into a Google Colab cell and press **Shift+Enter** to run:
+### Step 4: Run
 
-```python
-import os
-
-# ⚠️ CHANGE THESE to your GitHub username and forked repo name
-CFG = {
-    "GITHUB_USER": "YOUR_GITHUB_USERNAME",                       # <-- CHANGE THIS
-    "GITHUB_REPO": "ouroboros",                                  # <-- repo name (after fork)
-    # Models
-    "OUROBOROS_MODEL": "anthropic/claude-sonnet-4.6",            # primary LLM (via OpenRouter)
-    "OUROBOROS_MODEL_CODE": "anthropic/claude-sonnet-4.6",       # code editing (Claude Code CLI)
-    "OUROBOROS_MODEL_LIGHT": "google/gemini-3-pro-preview",      # consciousness + lightweight tasks
-    "OUROBOROS_WEBSEARCH_MODEL": "gpt-5",                        # web search (OpenAI Responses API)
-    # Fallback chain (first model != active will be used on empty response)
-    "OUROBOROS_MODEL_FALLBACK_LIST": "anthropic/claude-sonnet-4.6,google/gemini-3-pro-preview,openai/gpt-4.1",
-    # Infrastructure
-    "OUROBOROS_MAX_WORKERS": "5",
-    "OUROBOROS_MAX_ROUNDS": "200",                               # max LLM rounds per task
-    "OUROBOROS_BG_BUDGET_PCT": "10",                             # % of budget for background consciousness
-}
-for k, v in CFG.items():
-    os.environ[k] = str(v)
-
-# Clone the original repo (the boot shim will re-point origin to your fork)
-!git clone https://github.com/joi-lab/ouroboros.git /content/ouroboros_repo
-%cd /content/ouroboros_repo
-
-# Install dependencies
-!pip install -q -r requirements.txt
-
-# Run the boot shim
-%run colab_bootstrap_shim.py
+```bash
+pip install -r requirements.txt
+python colab_launcher.py
 ```
 
 ### Step 5: Start Chatting
 
 Open your Telegram bot and send any message. The first person to write becomes the **creator** (owner). All subsequent messages from other users are kindly ignored.
 
-**Restarting:** If Colab disconnects or you restart the runtime, just re-run the same cell. Your Ouroboros's evolution is preserved -- all changes are pushed to your fork, and agent state lives on Google Drive.
+**Restarting:** restart the process with the same environment variables. Runtime state persists locally under `OUROBOROS_HOME` (default: `~/.ouroboros`).
 
 ---
 
@@ -175,7 +155,7 @@ Full text: [BIBLE.md](BIBLE.md)
 
 ## Configuration
 
-### Required Secrets (Colab Secrets or environment variables)
+### Required Secrets (environment variables)
 
 | Variable | Description |
 |----------|-------------|
