@@ -32,7 +32,7 @@ Most AI agents execute tasks. Ouroboros **creates itself.**
 ## Architecture
 
 ```
-Telegram --> colab_launcher.py (local runtime)
+Telegram --> launcher.py (local runtime)
                 |
             supervisor/              (process management)
               state.py              -- state, budget tracking
@@ -71,49 +71,61 @@ Telegram --> colab_launcher.py (local runtime)
 1. Open Telegram and search for [@BotFather](https://t.me/BotFather).
 2. Send `/newbot` and follow the prompts to choose a name and username.
 3. Copy the **bot token**.
-4. You will use this token as `TELEGRAM_BOT_TOKEN` in the next step.
+4. You will put this token into `telegram_bot_token` in the config file.
 
 ### Step 2: Get API Keys
 
-| Key | Required | Where to get it |
+| Config key | Required | Where to get it |
 |-----|----------|-----------------|
-| `OPENROUTER_API_KEY` | Yes | [openrouter.ai/keys](https://openrouter.ai/keys) -- Create an account, add credits, generate a key |
-| `TELEGRAM_BOT_TOKEN` | Yes | [@BotFather](https://t.me/BotFather) on Telegram (see Step 1) |
-| `TOTAL_BUDGET` | Yes | Your spending limit in USD (e.g. `50`) |
-| `GITHUB_TOKEN` | Yes | [github.com/settings/tokens](https://github.com/settings/tokens) -- Generate a classic token with `repo` scope |
-| `OPENAI_API_KEY` | No | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) -- Enables web search tool |
-| `ANTHROPIC_API_KEY` | No | [console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys) -- Enables Claude Code CLI |
+| `openrouter_api_key` | Yes | [openrouter.ai/keys](https://openrouter.ai/keys) -- Create an account, add credits, generate a key |
+| `telegram_bot_token` | Yes | [@BotFather](https://t.me/BotFather) on Telegram (see Step 1) |
+| `total_budget` | Yes | Your spending limit in USD (e.g. `50`) |
+| `github_token` | Yes | [github.com/settings/tokens](https://github.com/settings/tokens) -- Generate a classic token with `repo` scope |
+| `openai_api_key` | No | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) -- Enables web search tool |
+| `anthropic_api_key` | No | [console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys) -- Enables Claude Code CLI |
 
-### Step 3: Configure Local Environment
+### Step 3: Create Runtime Config
 
-Set required environment variables in your shell:
+Create `ouroboros.config.json` in the repository root (you can copy from `ouroboros.config.example.json`):
 
-```bash
-export OPENROUTER_API_KEY=...
-export TELEGRAM_BOT_TOKEN=...
-export TOTAL_BUDGET=50
-export GITHUB_TOKEN=...
-export GITHUB_USER=your_username
-export GITHUB_REPO=ouroboros
-# optional
-export OPENAI_API_KEY=...
-export ANTHROPIC_API_KEY=...
-export OUROBOROS_HOME=~/.ouroboros
-export OUROBOROS_REPO_DIR=$(pwd)
+```json
+{
+  "telegram_bot_token": "...",
+  "github_token": "...",
+  "github_user": "your_username",
+  "github_repo": "ouroboros",
+  "total_budget": 50,
+  "openrouter_api_key": "",
+  "openai_api_key": "",
+  "anthropic_api_key": "",
+  "ouroboros_home": "~/.ouroboros",
+  "ouroboros_repo_dir": ".",
+  "max_workers": 5,
+  "model": "qwen2.5:14b",
+  "model_code": "qwen2.5:14b",
+  "model_light": "google/gemini-3-pro-preview",
+  "websearch_model": "gpt-5",
+  "max_rounds": 200,
+  "soft_timeout_sec": 600,
+  "hard_timeout_sec": 1800,
+  "diag_heartbeat_sec": 30,
+  "diag_slow_cycle_sec": 20,
+  "worker_start_method": "fork"
+}
 ```
 
 ### Step 4: Run
 
 ```bash
 pip install -r requirements.txt
-python colab_launcher.py
+python launcher.py
 ```
 
 ### Step 5: Start Chatting
 
 Open your Telegram bot and send any message. The first person to write becomes the **creator** (owner). All subsequent messages from other users are kindly ignored.
 
-**Restarting:** restart the process with the same environment variables. Runtime state persists locally under `OUROBOROS_HOME` (default: `~/.ouroboros`).
+**Restarting:** restart the process with the same config file. Runtime state persists locally under `ouroboros_home` (default: `~/.ouroboros`).
 
 ---
 
@@ -155,36 +167,34 @@ Full text: [BIBLE.md](BIBLE.md)
 
 ## Configuration
 
-### Required Secrets (environment variables)
+### Required Secrets (`ouroboros.config.json`)
 
 | Variable | Description |
 |----------|-------------|
-| `OPENROUTER_API_KEY` | OpenRouter API key for LLM calls |
-| `TELEGRAM_BOT_TOKEN` | Telegram Bot API token |
-| `TOTAL_BUDGET` | Spending limit in USD |
-| `GITHUB_TOKEN` | GitHub personal access token with `repo` scope |
+| `openrouter_api_key` | OpenRouter API key for LLM calls |
+| `telegram_bot_token` | Telegram Bot API token |
+| `total_budget` | Spending limit in USD |
+| `github_token` | GitHub personal access token with `repo` scope |
 
-### Optional Secrets
+### Optional Secrets (`ouroboros.config.json`)
 
 | Variable | Description |
 |----------|-------------|
-| `OPENAI_API_KEY` | Enables the `web_search` tool |
-| `ANTHROPIC_API_KEY` | Enables Claude Code CLI for code editing |
+| `openai_api_key` | Enables the `web_search` tool |
+| `anthropic_api_key` | Enables Claude Code CLI for code editing |
 
-### Optional Configuration (environment variables)
+### Optional Configuration (`ouroboros.config.json`)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `GITHUB_USER` | *(required in config cell)* | GitHub username |
-| `GITHUB_REPO` | `ouroboros` | GitHub repository name |
-| `OUROBOROS_MODEL` | `anthropic/claude-sonnet-4.6` | Primary LLM model (via OpenRouter) |
-| `OUROBOROS_MODEL_CODE` | `anthropic/claude-sonnet-4.6` | Model for code editing tasks |
-| `OUROBOROS_MODEL_LIGHT` | `google/gemini-3-pro-preview` | Model for lightweight tasks (dedup, compaction) |
-| `OUROBOROS_WEBSEARCH_MODEL` | `gpt-5` | Model for web search (OpenAI Responses API) |
-| `OUROBOROS_MAX_WORKERS` | `5` | Maximum number of parallel worker processes |
-| `OUROBOROS_BG_BUDGET_PCT` | `10` | Percentage of total budget allocated to background consciousness |
-| `OUROBOROS_MAX_ROUNDS` | `200` | Maximum LLM rounds per task |
-| `OUROBOROS_MODEL_FALLBACK_LIST` | `google/gemini-2.5-pro-preview,openai/o3,anthropic/claude-sonnet-4.6` | Fallback model chain for empty responses |
+| `github_user` | *(required)* | GitHub username |
+| `github_repo` | `ouroboros` | GitHub repository name |
+| `model` | `qwen2.5:14b` | Primary LLM model |
+| `model_code` | `qwen2.5:14b` | Model for code editing tasks |
+| `model_light` | `google/gemini-3-pro-preview` | Model for lightweight tasks (dedup, compaction) |
+| `websearch_model` | `gpt-5` | Model for web search |
+| `max_workers` | `5` | Maximum number of parallel worker processes |
+| `max_rounds` | `200` | Maximum LLM rounds per task |
 
 ---
 

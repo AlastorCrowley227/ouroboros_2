@@ -185,7 +185,7 @@ commands that expose env variables.
   - `utils.py` — shared utilities
   - `apply_patch.py` — Claude Code patch shim
 - `supervisor/` — supervisor (state, telegram, queue, workers, git_ops, events)
-- `colab_launcher.py` — entry point
+- `launcher.py` — entry point
 
 ### Google Drive (`MyDrive/Ouroboros/`)
 - `state/state.json` — state (owner_id, budget, version).

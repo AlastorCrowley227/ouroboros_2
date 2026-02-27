@@ -44,7 +44,7 @@ _CTX = None
 _LAST_SPAWN_TIME: float = 0.0  # grace period: don't count dead workers right after spawn
 _SPAWN_GRACE_SEC: float = 90.0  # workers may need up to ~60s to initialize (spawn + pip + filesystem)
 
-# On Linux, "spawn" re-imports __main__ (colab_launcher.py) in child processes.
+# On Linux, "spawn" re-imports __main__ (launcher.py) in child processes.
 # Since launcher has top-level side effects, this causes worker child crashes (exitcode=1).
 # Use "fork" by default on Linux; allow override via env.
 _DEFAULT_WORKER_START_METHOD = "fork" if sys.platform.startswith("linux") else "spawn"

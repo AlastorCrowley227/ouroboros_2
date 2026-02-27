@@ -1,0 +1,23 @@
+{
+  "telegram_bot_token": "",
+  "github_token": "",
+  "github_user": "",
+  "github_repo": "ouroboros",
+  "total_budget": 50,
+  "openrouter_api_key": "",
+  "openai_api_key": "",
+  "anthropic_api_key": "",
+  "ouroboros_home": "~/.ouroboros",
+  "ouroboros_repo_dir": ".",
+  "max_workers": 5,
+  "model": "qwen2.5:14b",
+  "model_code": "qwen2.5:14b",
+  "model_light": "google/gemini-3-pro-preview",
+  "websearch_model": "gpt-5",
+  "max_rounds": 200,
+  "soft_timeout_sec": 600,
+  "hard_timeout_sec": 1800,
+  "diag_heartbeat_sec": 30,
+  "diag_slow_cycle_sec": 20,
+  "worker_start_method": "fork"
+}
