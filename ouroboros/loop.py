@@ -25,35 +25,15 @@ from ouroboros.utils import utc_now_iso, append_jsonl, truncate_for_log, sanitiz
 
 log = logging.getLogger(__name__)
 
-# Pricing from OpenRouter API (2026-02-17). Update periodically via /api/v1/models.
-_MODEL_PRICING_STATIC = {
-    "anthropic/claude-opus-4.6": (5.0, 0.5, 25.0),
-    "anthropic/claude-opus-4": (15.0, 1.5, 75.0),
-    "anthropic/claude-sonnet-4": (3.0, 0.30, 15.0),
-    "anthropic/claude-sonnet-4.6": (3.0, 0.30, 15.0),
-    "anthropic/claude-sonnet-4.5": (3.0, 0.30, 15.0),
-    "openai/o3": (2.0, 0.50, 8.0),
-    "openai/o3-pro": (20.0, 1.0, 80.0),
-    "openai/o4-mini": (1.10, 0.275, 4.40),
-    "openai/gpt-4.1": (2.0, 0.50, 8.0),
-    "openai/gpt-5.2": (1.75, 0.175, 14.0),
-    "openai/gpt-5.2-codex": (1.75, 0.175, 14.0),
-    "google/gemini-2.5-pro-preview": (1.25, 0.125, 10.0),
-    "google/gemini-3-pro-preview": (2.0, 0.20, 12.0),
-    "x-ai/grok-3-mini": (0.30, 0.03, 0.50),
-    "qwen/qwen3.5-plus-02-15": (0.40, 0.04, 2.40),
-}
+# Local Ollama models have no external per-token billing; keep costs at zero.
+_MODEL_PRICING_STATIC = {}
 
 _pricing_fetched = False
 _cached_pricing = None
 _pricing_lock = threading.Lock()
 
 def _get_pricing() -> Dict[str, Tuple[float, float, float]]:
-    """
-    Lazy-load pricing. On first call, attempts to fetch from OpenRouter API.
-    Falls back to static pricing if fetch fails.
-    Thread-safe via module-level lock.
-    """
+    """Return local pricing table (empty for Ollama/local-only mode)."""
     global _pricing_fetched, _cached_pricing
 
     # Fast path: already fetched (read without lock for performance)
@@ -68,17 +48,6 @@ def _get_pricing() -> Dict[str, Tuple[float, float, float]]:
 
         _pricing_fetched = True
         _cached_pricing = dict(_MODEL_PRICING_STATIC)
-
-        try:
-            from ouroboros.llm import fetch_openrouter_pricing
-            _live = fetch_openrouter_pricing()
-            if _live and len(_live) > 5:
-                _cached_pricing.update(_live)
-        except Exception as e:
-            import logging as _log
-            _log.getLogger(__name__).warning("Failed to sync pricing from OpenRouter: %s", e)
-            # Reset flag so we retry next time
-            _pricing_fetched = False
 
         return _cached_pricing
 
@@ -395,56 +364,6 @@ def _handle_text_response(
     return (content or ""), accumulated_usage, llm_trace
 
 
-def _check_budget_limits(
-    budget_remaining_usd: Optional[float],
-    accumulated_usage: Dict[str, Any],
-    round_idx: int,
-    messages: List[Dict[str, Any]],
-    llm: LLMClient,
-    active_model: str,
-    active_effort: str,
-    max_retries: int,
-    drive_logs: pathlib.Path,
-    task_id: str,
-    event_queue: Optional[queue.Queue],
-    llm_trace: Dict[str, Any],
-    task_type: str = "task",
-) -> Optional[Tuple[str, Dict[str, Any], Dict[str, Any]]]:
-    """
-    Check budget limits and handle budget overrun.
-
-    Returns:
-        None if budget is OK (continue loop)
-        (final_text, accumulated_usage, llm_trace) if budget exceeded (stop loop)
-    """
-    if budget_remaining_usd is None:
-        return None
-
-    task_cost = accumulated_usage.get("cost", 0)
-    budget_pct = task_cost / budget_remaining_usd if budget_remaining_usd > 0 else 1.0
-
-    if budget_pct > 0.5:
-        # Hard stop — protect the budget
-        finish_reason = f"Task spent ${task_cost:.3f} (>50% of remaining ${budget_remaining_usd:.2f}). Budget exhausted."
-        messages.append({"role": "system", "content": f"[BUDGET LIMIT] {finish_reason} Give your final response now."})
-        try:
-            final_msg, final_cost = _call_llm_with_retry(
-                llm, messages, active_model, None, active_effort,
-                max_retries, drive_logs, task_id, round_idx, event_queue, accumulated_usage, task_type
-            )
-            if final_msg:
-                return (final_msg.get("content") or finish_reason), accumulated_usage, llm_trace
-            return finish_reason, accumulated_usage, llm_trace
-        except Exception:
-            log.warning("Failed to get final response after budget limit", exc_info=True)
-            return finish_reason, accumulated_usage, llm_trace
-    elif budget_pct > 0.3 and round_idx % 10 == 0:
-        # Soft nudge every 10 rounds when spending is significant
-        messages.append({"role": "system", "content": f"[INFO] Task spent ${task_cost:.3f} of ${budget_remaining_usd:.2f}. Wrap up if possible."})
-
-    return None
-
-
 def _maybe_inject_self_check(
     round_idx: int,
     max_rounds: int,
@@ -466,12 +385,11 @@ def _maybe_inject_self_check(
         else sum(estimate_tokens(str(b.get("text", ""))) for b in m.get("content", []) if isinstance(b, dict))
         for m in messages
     )
-    task_cost = accumulated_usage.get("cost", 0)
     checkpoint_num = round_idx // REMINDER_INTERVAL
 
     reminder = (
         f"[CHECKPOINT {checkpoint_num} — round {round_idx}/{max_rounds}]\n"
-        f"📊 Context: ~{ctx_tokens} tokens | Cost so far: ${task_cost:.2f} | "
+        f"📊 Context: ~{ctx_tokens} tokens | "
         f"Rounds remaining: {max_rounds - round_idx}\n\n"
         f"⏸️ PAUSE AND REFLECT before continuing:\n"
         f"1. Am I making real progress, or repeating the same actions?\n"
@@ -484,7 +402,7 @@ def _maybe_inject_self_check(
         f"This is not a hard limit — you decide. But be honest with yourself."
     )
     messages.append({"role": "system", "content": reminder})
-    emit_progress(f"🔄 Checkpoint {checkpoint_num} at round {round_idx}: ~{ctx_tokens} tokens, ${task_cost:.2f} spent")
+    emit_progress(f"🔄 Checkpoint {checkpoint_num} at round {round_idx}: ~{ctx_tokens} tokens")
 
 
 def _setup_dynamic_tools(tools_registry, tool_schemas, messages):
@@ -701,7 +619,7 @@ def run_llm_loop(
                 # Configurable fallback priority list (Bible P3: no hardcoded behavior)
                 fallback_list_raw = os.environ.get(
                     "OUROBOROS_MODEL_FALLBACK_LIST",
-                    "google/gemini-2.5-pro-preview,openai/o3,anthropic/claude-sonnet-4.6"
+                    "qwen2.5:14b,llama3.1:8b,mistral:7b"
                 )
                 fallback_candidates = [m.strip() for m in fallback_list_raw.split(",") if m.strip()]
                 fallback_model = None
@@ -753,15 +671,6 @@ def run_llm_loop(
                 messages, llm_trace, emit_progress
             )
 
-            # --- Budget guard ---
-            # LLM decides when to stop (Bible P0, P3). We only enforce hard budget limit.
-            budget_result = _check_budget_limits(
-                budget_remaining_usd, accumulated_usage, round_idx, messages,
-                llm, active_model, active_effort, max_retries, drive_logs,
-                task_id, event_queue, llm_trace, task_type
-            )
-            if budget_result is not None:
-                return budget_result
 
     finally:
         # Cleanup thread-sticky executor for stateful tools
@@ -784,7 +693,6 @@ def _emit_llm_usage_event(
     task_id: str,
     model: str,
     usage: Dict[str, Any],
-    cost: float,
     category: str = "task",
 ) -> None:
     """
@@ -795,7 +703,6 @@ def _emit_llm_usage_event(
         task_id: Task ID for the event
         model: Model name used for the LLM call
         usage: Usage dict from LLM response
-        cost: Calculated cost for this call
         category: Budget category (task, evolution, consciousness, review, summarize, other)
     """
     if not event_queue:
@@ -810,8 +717,6 @@ def _emit_llm_usage_event(
             "completion_tokens": int(usage.get("completion_tokens") or 0),
             "cached_tokens": int(usage.get("cached_tokens") or 0),
             "cache_write_tokens": int(usage.get("cache_write_tokens") or 0),
-            "cost": cost,
-            "cost_estimated": not bool(usage.get("cost")),
             "usage": usage,
             "category": category,
         })
@@ -852,20 +757,11 @@ def _call_llm_with_retry(
             msg = resp_msg
             add_usage(accumulated_usage, usage)
 
-            # Calculate cost and emit event for EVERY attempt (including retries)
-            cost = float(usage.get("cost") or 0)
-            if not cost:
-                cost = _estimate_cost(
-                    model,
-                    int(usage.get("prompt_tokens") or 0),
-                    int(usage.get("completion_tokens") or 0),
-                    int(usage.get("cached_tokens") or 0),
-                    int(usage.get("cache_write_tokens") or 0),
-                )
-
-            # Emit real-time usage event with category based on task_type
+            # Emit token-usage event with category based on task_type
             category = task_type if task_type in ("evolution", "consciousness", "review", "summarize") else "task"
-            _emit_llm_usage_event(event_queue, task_id, model, usage, cost, category)
+            _emit_llm_usage_event(event_queue, task_id, model, usage, category)
+
+            cost = 0.0
 
             # Empty response = retry-worthy (model sometimes returns empty content with no tool_calls)
             tool_calls = msg.get("tool_calls") or []

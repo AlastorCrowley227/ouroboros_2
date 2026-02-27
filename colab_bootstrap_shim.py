@@ -25,10 +25,10 @@ def export_secret_to_env(name: str, required: bool = False) -> Optional[str]:
     return val
 
 
-for _name in ("OPENROUTER_API_KEY", "TELEGRAM_BOT_TOKEN", "TOTAL_BUDGET", "GITHUB_TOKEN", "GITHUB_USER", "GITHUB_REPO"):
+for _name in ("TELEGRAM_BOT_TOKEN", "GITHUB_TOKEN", "GITHUB_USER", "GITHUB_REPO"):
     export_secret_to_env(_name, required=True)
 
-for _name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
+for _name in ("ANTHROPIC_API_KEY", "OLLAMA_API_KEY", "OLLAMA_BASE_URL"):
     export_secret_to_env(_name, required=False)
 
 os.environ.setdefault("OUROBOROS_WORKER_START_METHOD", "fork")

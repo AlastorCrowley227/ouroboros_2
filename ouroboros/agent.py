@@ -250,41 +250,8 @@ class OuroborosAgent:
             return {"status": "error", "error": str(e)}, 0
 
     def _check_budget(self) -> Tuple[dict, int]:
-        """Check budget remaining with warning thresholds."""
-        try:
-            state_path = self.env.drive_path("state") / "state.json"
-            state_data = json.loads(read_text(state_path))
-            total_budget_str = os.environ.get("TOTAL_BUDGET", "")
-
-            # Handle unset or zero budget gracefully
-            if not total_budget_str or float(total_budget_str) == 0:
-                return {"status": "unconfigured"}, 0
-            else:
-                total_budget = float(total_budget_str)
-                spent = float(state_data.get("spent_usd", 0))
-                remaining = max(0, total_budget - spent)
-
-                if remaining < 10:
-                    status = "emergency"
-                    issues = 1
-                elif remaining < 50:
-                    status = "critical"
-                    issues = 1
-                elif remaining < 100:
-                    status = "warning"
-                    issues = 0
-                else:
-                    status = "ok"
-                    issues = 0
-
-                return {
-                    "status": status,
-                    "remaining_usd": round(remaining, 2),
-                    "total_usd": total_budget,
-                    "spent_usd": round(spent, 2),
-                }, issues
-        except Exception as e:
-            return {"status": "error", "error": str(e)}, 0
+        """Budget checks disabled in local-only mode."""
+        return {"status": "disabled"}, 0
 
     def _verify_system_state(self, git_sha: str) -> None:
         """Bible Principle 1: verify system state on every startup.
@@ -368,19 +335,7 @@ class OuroborosAgent:
                 log.warning("Failed to log context soft cap trim event", exc_info=True)
                 pass
 
-        # Read budget remaining for cost guard
-        budget_remaining = None
-        try:
-            state_path = self.env.drive_path("state") / "state.json"
-            state_data = json.loads(read_text(state_path))
-            total_budget = float(os.environ.get("TOTAL_BUDGET", "1"))
-            spent = float(state_data.get("spent_usd", 0))
-            if total_budget > 0:
-                budget_remaining = max(0, total_budget - spent)
-        except Exception:
-            pass
-
-        cap_info["budget_remaining"] = budget_remaining
+        cap_info["budget_remaining"] = None
         return ctx, messages, cap_info
 
     def handle_task(self, task: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -398,7 +353,6 @@ class OuroborosAgent:
         try:
             # --- Prepare task context ---
             ctx, messages, cap_info = self._prepare_task_context(task)
-            budget_remaining = cap_info.get("budget_remaining")
 
             # --- LLM loop (delegated to loop.py) ---
             usage: Dict[str, Any] = {}
@@ -421,7 +375,7 @@ class OuroborosAgent:
                     incoming_messages=self._incoming_messages,
                     task_type=task_type_str,
                     task_id=str(task.get("id") or ""),
-                    budget_remaining_usd=budget_remaining,
+                    budget_remaining_usd=None,
                     event_queue=self._event_queue,
                     initial_effort=initial_effort,
                     drive_root=self.env.drive_root,

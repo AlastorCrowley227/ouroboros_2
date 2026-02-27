@@ -22,17 +22,15 @@ log = logging.getLogger(__name__)
 # Module-level config (set via init())
 # ---------------------------------------------------------------------------
 DRIVE_ROOT = None  # pathlib.Path
-TOTAL_BUDGET_LIMIT: float = 0.0
-BUDGET_REPORT_EVERY_MESSAGES: int = 10
 _TG: Optional["TelegramClient"] = None
 
 
 def init(drive_root, total_budget_limit: float, budget_report_every: int,
          tg_client: "TelegramClient") -> None:
-    global DRIVE_ROOT, TOTAL_BUDGET_LIMIT, BUDGET_REPORT_EVERY_MESSAGES, _TG
+    _ = total_budget_limit
+    _ = budget_report_every
+    global DRIVE_ROOT, _TG
     DRIVE_ROOT = drive_root
-    TOTAL_BUDGET_LIMIT = total_budget_limit
-    BUDGET_REPORT_EVERY_MESSAGES = budget_report_every
     _TG = tg_client
 
 
@@ -371,41 +369,8 @@ def _send_markdown_telegram(chat_id: int, text: str) -> Tuple[bool, str]:
 
 
 # ---------------------------------------------------------------------------
-# Budget + logging
+# Logging
 # ---------------------------------------------------------------------------
-
-def _format_budget_line(st: Dict[str, Any]) -> str:
-    spent = float(st.get("spent_usd") or 0.0)
-    total = float(TOTAL_BUDGET_LIMIT or 0.0)
-    pct = (spent / total * 100.0) if total > 0 else 0.0
-    sha = (st.get("current_sha") or "")[:8]
-    branch = st.get("current_branch") or "?"
-    return f"—\nBudget: ${spent:.4f} / ${total:.2f} ({pct:.2f}%) | {branch}@{sha}"
-
-
-def budget_line(force: bool = False) -> str:
-    try:
-        st = load_state()
-        every = max(1, int(BUDGET_REPORT_EVERY_MESSAGES))
-        if force:
-            st["budget_messages_since_report"] = 0
-            save_state(st)
-            return _format_budget_line(st)
-
-        counter = int(st.get("budget_messages_since_report") or 0) + 1
-        if counter < every:
-            st["budget_messages_since_report"] = counter
-            save_state(st)
-            return ""
-
-        st["budget_messages_since_report"] = 0
-        save_state(st)
-        return _format_budget_line(st)
-    except Exception:
-        log.debug("Suppressed exception in budget_line", exc_info=True)
-        return ""
-
-
 def log_chat(direction: str, chat_id: int, user_id: int, text: str) -> None:
     append_jsonl(DRIVE_ROOT / "logs" / "chat.jsonl", {
         "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -432,18 +397,11 @@ def send_with_budget(chat_id: int, text: str, log_text: Optional[str] = None,
         })
     else:
         log_chat("out", chat_id, owner_id, text if log_text is None else log_text)
-    budget = budget_line(force=force_budget)
+    _ = force_budget
     _text = str(text or "")
-    if not budget:
-        if _text.strip() in ("", "\u200b"):
-            return
-        full = _text
-    else:
-        base = _text.rstrip()
-        if base in ("", "\u200b"):
-            full = budget
-        else:
-            full = base + "\n\n" + budget
+    if _text.strip() in ("", "\u200b"):
+        return
+    full = _text
 
     if fmt == "markdown":
         ok, err = _send_markdown_telegram(chat_id, full)

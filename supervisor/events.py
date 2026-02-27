@@ -23,7 +23,6 @@ log = logging.getLogger(__name__)
 
 def _handle_llm_usage(evt: Dict[str, Any], ctx: Any) -> None:
     usage = evt.get("usage") or {}
-    ctx.update_budget_from_usage(usage)
 
     # Log to events.jsonl for audit trail
     from ouroboros.utils import utc_now_iso, append_jsonl
@@ -34,7 +33,6 @@ def _handle_llm_usage(evt: Dict[str, Any], ctx: Any) -> None:
             "task_id": evt.get("task_id", ""),
             "category": evt.get("category", "other"),
             "model": evt.get("model", ""),
-            "cost": usage.get("cost", 0),
             "prompt_tokens": usage.get("prompt_tokens", 0),
             "completion_tokens": usage.get("completion_tokens", 0),
         })
@@ -94,16 +92,10 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
     # Track evolution task success/failure for circuit breaker
     if task_type == "evolution":
         st = ctx.load_state()
-        # Check if task produced meaningful output (successful evolution)
-        # A successful evolution should have:
-        # - Reasonable cost (not near-zero, indicating actual work)
-        # - Multiple rounds (not just 1 retry)
-        cost = float(evt.get("cost_usd") or 0)
         rounds = int(evt.get("total_rounds") or 0)
 
-        # Heuristic: if cost > $0.10 and rounds >= 1, consider it successful
-        # Empty responses typically cost < $0.01 and have 0-1 rounds
-        if cost > 0.10 and rounds >= 1:
+        # Heuristic: at least one round means evolution ran; otherwise treat as failure
+        if rounds >= 1:
             # Success: reset failure counter
             st["evolution_consecutive_failures"] = 0
             ctx.save_state(st)
@@ -119,7 +111,6 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
                     "type": "evolution_task_failure_tracked",
                     "task_id": task_id,
                     "consecutive_failures": failures,
-                    "cost_usd": cost,
                     "rounds": rounds,
                 },
             )
@@ -142,7 +133,6 @@ def _handle_task_done(evt: Dict[str, Any], ctx: Any) -> None:
                 "task_id": task_id,
                 "status": "completed",
                 "result": "",
-                "cost_usd": float(evt.get("cost_usd", 0)),
                 "ts": evt.get("ts", ""),
             }
             tmp_file = results_dir / f"{task_id}.json.tmp"

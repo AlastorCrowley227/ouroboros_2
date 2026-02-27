@@ -175,35 +175,7 @@ def _build_health_invariants(env: Any) -> str:
     except Exception:
         pass
 
-    # 2. Budget drift
-    try:
-        state_json = read_text(env.drive_path("state/state.json"))
-        state_data = json.loads(state_json)
-        if state_data.get("budget_drift_alert"):
-            drift_pct = state_data.get("budget_drift_pct", 0)
-            our = state_data.get("spent_usd", 0)
-            theirs = state_data.get("openrouter_total_usd", 0)
-            checks.append(f"WARNING: BUDGET DRIFT {drift_pct:.1f}% — tracked=${our:.2f} vs OpenRouter=${theirs:.2f}")
-        else:
-            checks.append("OK: budget drift within tolerance")
-    except Exception:
-        pass
-
-    # 3. Per-task cost anomalies
-    try:
-        from supervisor.state import per_task_cost_summary
-        costly = [t for t in per_task_cost_summary(5) if t["cost"] > 5.0]
-        for t in costly:
-            checks.append(
-                f"WARNING: HIGH-COST TASK — task_id={t['task_id']} "
-                f"cost=${t['cost']:.2f} rounds={t['rounds']}"
-            )
-        if not costly:
-            checks.append("OK: no high-cost tasks (>$5)")
-    except Exception:
-        pass
-
-    # 4. Stale identity.md
+    # 2. Stale identity.md
     try:
         import time as _time
         identity_path = env.drive_path("memory/identity.md")
@@ -216,7 +188,7 @@ def _build_health_invariants(env: Any) -> str:
     except Exception:
         pass
 
-    # 5. Duplicate processing detection: same owner message text appearing in multiple tasks
+    # 3. Duplicate processing detection: same owner message text appearing in multiple tasks
     try:
         import hashlib
         msg_hash_to_tasks: Dict[str, set] = {}

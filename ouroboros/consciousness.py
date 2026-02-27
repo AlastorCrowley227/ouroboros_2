@@ -64,12 +64,6 @@ class BackgroundConsciousness:
         self._observations: queue.Queue = queue.Queue()
         self._deferred_events: list = []
 
-        # Budget tracking
-        self._bg_spent_usd: float = 0.0
-        self._bg_budget_pct: float = float(
-            os.environ.get("OUROBOROS_BG_BUDGET_PCT", "10")
-        )
-
     # -------------------------------------------------------------------
     # Lifecycle
     # -------------------------------------------------------------------
@@ -101,7 +95,7 @@ class BackgroundConsciousness:
         return "Background consciousness stopping."
 
     def pause(self) -> None:
-        """Pause during task execution to avoid budget contention."""
+        """Pause during task execution."""
         self._paused = True
 
     def resume(self) -> None:
@@ -138,11 +132,6 @@ class BackgroundConsciousness:
             if self._paused:
                 continue
 
-            # Budget check
-            if not self._check_budget():
-                self._next_wakeup_sec = 3600  # Sleep long if over budget
-                continue
-
             try:
                 self._think()
             except Exception as e:
@@ -155,18 +144,6 @@ class BackgroundConsciousness:
                 self._next_wakeup_sec = min(
                     self._next_wakeup_sec * 2, 1800
                 )
-
-    def _check_budget(self) -> bool:
-        """Check if background consciousness is within its budget allocation."""
-        try:
-            total_budget = float(os.environ.get("TOTAL_BUDGET", "1"))
-            if total_budget <= 0:
-                return True
-            max_bg = total_budget * (self._bg_budget_pct / 100.0)
-            return self._bg_spent_usd < max_bg
-        except Exception:
-            log.warning("Failed to check background consciousness budget", exc_info=True)
-            return True
 
     # -------------------------------------------------------------------
     # Think cycle
@@ -183,7 +160,6 @@ class BackgroundConsciousness:
             {"role": "user", "content": "Wake up. Think."},
         ]
 
-        total_cost = 0.0
         final_content = ""
         round_idx = 0
         all_pending_events = []  # Accumulate events across all tool calls
@@ -199,36 +175,11 @@ class BackgroundConsciousness:
                     reasoning_effort="low",
                     max_tokens=2048,
                 )
-                cost = float(usage.get("cost") or 0)
-                total_cost += cost
-                self._bg_spent_usd += cost
-
-                # Write BG spending to global state so it's visible in budget tracking
-                try:
-                    from supervisor.state import update_budget_from_usage
-                    update_budget_from_usage({
-                        "cost": cost, "rounds": 1,
-                        "prompt_tokens": usage.get("prompt_tokens", 0),
-                        "completion_tokens": usage.get("completion_tokens", 0),
-                        "cached_tokens": usage.get("cached_tokens", 0),
-                    })
-                except Exception:
-                    log.debug("Failed to update global budget from BG consciousness", exc_info=True)
-
-                # Budget check between rounds
-                if not self._check_budget():
-                    append_jsonl(self._drive_root / "logs" / "events.jsonl", {
-                        "ts": utc_now_iso(),
-                        "type": "bg_budget_exceeded_mid_cycle",
-                        "round": round_idx,
-                    })
-                    break
-
                 # Report usage to supervisor
                 if self._event_queue is not None:
                     self._event_queue.put({
                         "type": "llm_usage",
-                        "provider": "openrouter",
+                        "provider": "ollama",
                         "usage": usage,
                         "source": "consciousness",
                         "ts": utc_now_iso(),
@@ -274,7 +225,6 @@ class BackgroundConsciousness:
                 "ts": utc_now_iso(),
                 "type": "consciousness_thought",
                 "thought_preview": (final_content or "")[:300],
-                "cost_usd": total_cost,
                 "rounds": round_idx,
                 "model": model,
             })
@@ -338,21 +288,7 @@ class BackgroundConsciousness:
 
         # Runtime info + state
         runtime_lines = [f"UTC: {utc_now_iso()}"]
-        runtime_lines.append(f"BG budget spent: ${self._bg_spent_usd:.4f}")
         runtime_lines.append(f"Current wakeup interval: {self._next_wakeup_sec}s")
-
-        # Read state.json for budget remaining
-        try:
-            state_path = self._drive_root / "state" / "state.json"
-            if state_path.exists():
-                state_data = json.loads(read_text(state_path))
-                total_budget = float(os.environ.get("TOTAL_BUDGET", "1"))
-                spent = float(state_data.get("spent_usd", 0))
-                if total_budget > 0:
-                    remaining = max(0, total_budget - spent)
-                    runtime_lines.append(f"Budget remaining: ${remaining:.2f} / ${total_budget:.2f}")
-        except Exception as e:
-            log.debug("Failed to read state for budget info: %s", e)
 
         # Show current model
         runtime_lines.append(f"Current model: {self._model}")
