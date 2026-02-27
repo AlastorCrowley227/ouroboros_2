@@ -21,7 +21,6 @@ Ouroboros — локальный self-hosted агент с Telegram-интерф
 - Python **3.10+**
 - Linux/macOS окружение с доступом к git
 - Telegram bot token
-- OpenRouter API key (для LLM-вызовов)
 
 ## Быстрый старт
 
