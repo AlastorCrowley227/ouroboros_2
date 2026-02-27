@@ -60,6 +60,9 @@ TOTAL_BUDGET_LIMIT = float(RUNTIME_CONFIG.total_budget)
 ANTHROPIC_API_KEY = RUNTIME_CONFIG.anthropic_api_key
 GITHUB_USER = RUNTIME_CONFIG.github_user
 GITHUB_REPO = RUNTIME_CONFIG.github_repo
+VCS_PLATFORM = str(RUNTIME_CONFIG.vcs_platform or "github").strip().lower()
+GITEA_BASE_URL = str(RUNTIME_CONFIG.gitea_base_url or "").strip().rstrip("/")
+GIT_REMOTE_URL = str(RUNTIME_CONFIG.git_remote_url or "").strip()
 MAX_WORKERS = int(RUNTIME_CONFIG.max_workers)
 MODEL_MAIN = RUNTIME_CONFIG.model or "qwen2.5:14b"
 MODEL_CODE = RUNTIME_CONFIG.model_code or "qwen2.5:14b"
@@ -74,6 +77,11 @@ DIAG_SLOW_CYCLE_SEC = max(0, int(RUNTIME_CONFIG.diag_slow_cycle_sec))
 os.environ["ANTHROPIC_API_KEY"] = str(ANTHROPIC_API_KEY or "")
 os.environ["GITHUB_USER"] = str(GITHUB_USER)
 os.environ["GITHUB_REPO"] = str(GITHUB_REPO)
+os.environ["OUROBOROS_VCS_PLATFORM"] = str(VCS_PLATFORM)
+if GITEA_BASE_URL:
+    os.environ["GITEA_BASE_URL"] = str(GITEA_BASE_URL)
+if GIT_REMOTE_URL:
+    os.environ["GIT_REMOTE_URL"] = str(GIT_REMOTE_URL)
 os.environ["OUROBOROS_MODEL"] = str(MODEL_MAIN or "qwen2.5:14b")
 os.environ["OUROBOROS_MODEL_CODE"] = str(MODEL_CODE or "qwen2.5:14b")
 if MODEL_LIGHT:
@@ -122,7 +130,17 @@ if not CHAT_LOG_PATH.exists():
 # ----------------------------
 BRANCH_DEV = "ouroboros"
 BRANCH_STABLE = "ouroboros-stable"
-REMOTE_URL = f"https://{GITHUB_TOKEN}:x-oauth-basic@github.com/{GITHUB_USER}/{GITHUB_REPO}.git"
+if VCS_PLATFORM == "github":
+    REMOTE_URL = f"https://{GITHUB_TOKEN}:x-oauth-basic@github.com/{GITHUB_USER}/{GITHUB_REPO}.git"
+elif VCS_PLATFORM == "gitea":
+    if GIT_REMOTE_URL:
+        REMOTE_URL = GIT_REMOTE_URL
+    else:
+        token_prefix = f"{GITHUB_TOKEN}:" if str(GITHUB_TOKEN or "").strip() else ""
+        host = GITEA_BASE_URL.replace("https://", "").replace("http://", "")
+        REMOTE_URL = f"https://{token_prefix}x-oauth-basic@{host}/{GITHUB_USER}/{GITHUB_REPO}.git"
+else:
+    REMOTE_URL = GIT_REMOTE_URL
 
 # ----------------------------
 # 4) Initialize supervisor modules
@@ -152,7 +170,7 @@ from supervisor.git_ops import (
 )
 git_ops_init(
     repo_dir=REPO_DIR, drive_root=DRIVE_ROOT, remote_url=REMOTE_URL,
-    branch_dev=BRANCH_DEV, branch_stable=BRANCH_STABLE,
+    branch_dev=BRANCH_DEV, branch_stable=BRANCH_STABLE, vcs_platform=VCS_PLATFORM,
 )
 
 from supervisor.queue import (

@@ -15,6 +15,10 @@ from ouroboros.utils import utc_now_iso, write_text, safe_relpath, run_cmd
 log = logging.getLogger(__name__)
 
 
+def _vcs_platform() -> str:
+    return str(os.environ.get("OUROBOROS_VCS_PLATFORM", "github")).strip().lower() or "github"
+
+
 # --- Git lock ---
 
 def _acquire_git_lock(ctx: ToolContext, timeout_sec: int = 120) -> pathlib.Path:
@@ -105,6 +109,9 @@ def _git_push_with_tests(ctx: ToolContext) -> Optional[str]:
         ctx.last_push_succeeded = False
         return f"⚠️ PRE_PUSH_TESTS_FAILED: Tests failed, push blocked.\n{test_error}\nCommitted locally but NOT pushed. Fix tests and push manually."
 
+    if _vcs_platform() == "git":
+        return None
+
     try:
         run_cmd(["git", "pull", "--rebase", "origin", ctx.branch_dev], cwd=ctx.repo_dir)
     except Exception:
@@ -150,7 +157,7 @@ def _repo_write_commit(ctx: ToolContext, path: str, content: str, commit_message
     finally:
         _release_git_lock(lock)
     ctx.last_push_succeeded = True
-    return f"OK: committed and pushed to {ctx.branch_dev}: {commit_message}"
+    return f"OK: committed locally on {ctx.branch_dev}: {commit_message}" if _vcs_platform() == "git" else f"OK: committed and pushed to {ctx.branch_dev}: {commit_message}"
 
 
 def _repo_commit_push(ctx: ToolContext, commit_message: str, paths: Optional[List[str]] = None) -> str:
@@ -192,7 +199,7 @@ def _repo_commit_push(ctx: ToolContext, commit_message: str, paths: Optional[Lis
     finally:
         _release_git_lock(lock)
     ctx.last_push_succeeded = True
-    result = f"OK: committed and pushed to {ctx.branch_dev}: {commit_message}"
+    result = f"OK: committed locally on {ctx.branch_dev}: {commit_message}" if _vcs_platform() == "git" else f"OK: committed and pushed to {ctx.branch_dev}: {commit_message}"
     if paths is not None:
         try:
             untracked = run_cmd(["git", "ls-files", "--others", "--exclude-standard"], cwd=ctx.repo_dir)

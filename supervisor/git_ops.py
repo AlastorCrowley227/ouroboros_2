@@ -32,16 +32,19 @@ DRIVE_ROOT: pathlib.Path = pathlib.Path.home() / ".ouroboros"
 REMOTE_URL: str = ""
 BRANCH_DEV: str = "ouroboros"
 BRANCH_STABLE: str = "ouroboros-stable"
+VCS_PLATFORM: str = "github"
 
 
 def init(repo_dir: pathlib.Path, drive_root: pathlib.Path, remote_url: str,
-         branch_dev: str = "ouroboros", branch_stable: str = "ouroboros-stable") -> None:
-    global REPO_DIR, DRIVE_ROOT, REMOTE_URL, BRANCH_DEV, BRANCH_STABLE
+         branch_dev: str = "ouroboros", branch_stable: str = "ouroboros-stable",
+         vcs_platform: str = "github") -> None:
+    global REPO_DIR, DRIVE_ROOT, REMOTE_URL, BRANCH_DEV, BRANCH_STABLE, VCS_PLATFORM
     REPO_DIR = repo_dir
     DRIVE_ROOT = drive_root
     REMOTE_URL = remote_url
     BRANCH_DEV = branch_dev
     BRANCH_STABLE = branch_stable
+    VCS_PLATFORM = str(vcs_platform or "github").strip().lower()
 
 
 # ---------------------------------------------------------------------------
@@ -54,6 +57,18 @@ def git_capture(cmd: List[str]) -> Tuple[int, str, str]:
 
 
 def ensure_repo_present() -> None:
+    if VCS_PLATFORM == "git":
+        REPO_DIR.mkdir(parents=True, exist_ok=True)
+        if not (REPO_DIR / ".git").exists():
+            subprocess.run(["git", "init"], cwd=str(REPO_DIR), check=True)
+        subprocess.run(["git", "config", "user.name", "Ouroboros"], cwd=str(REPO_DIR), check=True)
+        subprocess.run(["git", "config", "user.email", "ouroboros@users.noreply.github.com"],
+                        cwd=str(REPO_DIR), check=True)
+        rc, branch, _ = git_capture(["git", "rev-parse", "--abbrev-ref", "HEAD"])
+        if rc == 0 and branch and branch != BRANCH_DEV:
+            subprocess.run(["git", "checkout", "-B", BRANCH_DEV], cwd=str(REPO_DIR), check=True)
+        return
+
     if not (REPO_DIR / ".git").exists():
         subprocess.run(["rm", "-rf", str(REPO_DIR)], check=False)
         subprocess.run(["git", "clone", REMOTE_URL, str(REPO_DIR)], check=True)
@@ -207,7 +222,10 @@ def _create_rescue_snapshot(branch: str, reason: str,
 
 def checkout_and_reset(branch: str, reason: str = "unspecified",
                        unsynced_policy: str = "ignore") -> Tuple[bool, str]:
-    rc, _, err = git_capture(["git", "fetch", "origin"])
+    if VCS_PLATFORM != "git":
+        rc, _, err = git_capture(["git", "fetch", "origin"])
+    else:
+        rc, err = 0, ""
     if rc != 0:
         msg = f"git fetch failed: {err or 'unknown error'}"
         append_jsonl(
@@ -284,33 +302,44 @@ def checkout_and_reset(branch: str, reason: str = "unspecified",
                 },
             )
 
-    rc_verify = subprocess.run(
-        ["git", "rev-parse", "--verify", f"origin/{branch}"],
-        cwd=str(REPO_DIR), capture_output=True,
-    ).returncode
-    if rc_verify != 0:
-        msg = f"Branch {branch} not found on remote"
-        append_jsonl(
-            DRIVE_ROOT / "logs" / "supervisor.jsonl",
-            {
-                "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                "type": "reset_branch_missing",
-                "target_branch": branch, "reason": reason,
-            },
-        )
-        return False, msg
+    if VCS_PLATFORM == "git":
+        rc_verify = subprocess.run(
+            ["git", "rev-parse", "--verify", branch],
+            cwd=str(REPO_DIR), capture_output=True,
+        ).returncode
+        if rc_verify != 0:
+            subprocess.run(["git", "checkout", "-B", branch], cwd=str(REPO_DIR), check=True)
+        else:
+            subprocess.run(["git", "checkout", branch], cwd=str(REPO_DIR), check=True)
+    else:
+        rc_verify = subprocess.run(
+            ["git", "rev-parse", "--verify", f"origin/{branch}"],
+            cwd=str(REPO_DIR), capture_output=True,
+        ).returncode
+        if rc_verify != 0:
+            msg = f"Branch {branch} not found on remote"
+            append_jsonl(
+                DRIVE_ROOT / "logs" / "supervisor.jsonl",
+                {
+                    "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    "type": "reset_branch_missing",
+                    "target_branch": branch, "reason": reason,
+                },
+            )
+            return False, msg
 
-    subprocess.run(["git", "checkout", branch], cwd=str(REPO_DIR), check=True)
-    subprocess.run(["git", "reset", "--hard", f"origin/{branch}"], cwd=str(REPO_DIR), check=True)
+        subprocess.run(["git", "checkout", branch], cwd=str(REPO_DIR), check=True)
+        subprocess.run(["git", "reset", "--hard", f"origin/{branch}"], cwd=str(REPO_DIR), check=True)
     # Clean __pycache__ to prevent stale bytecode (git checkout may not update mtime)
     for p in REPO_DIR.rglob("__pycache__"):
         shutil.rmtree(p, ignore_errors=True)
     st = load_state()
     st["current_branch"] = branch
-    st["current_sha"] = subprocess.run(
+    sha_run = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=str(REPO_DIR),
-        capture_output=True, text=True, check=True,
-    ).stdout.strip()
+        capture_output=True, text=True, check=False,
+    )
+    st["current_sha"] = (sha_run.stdout or "").strip()
     save_state(st)
     return True, "ok"
 
