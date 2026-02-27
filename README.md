@@ -80,7 +80,7 @@ Telegram --> launcher.py (local runtime)
 | `openrouter_api_key` | Yes | [openrouter.ai/keys](https://openrouter.ai/keys) -- Create an account, add credits, generate a key |
 | `telegram_bot_token` | Yes | [@BotFather](https://t.me/BotFather) on Telegram (see Step 1) |
 | `total_budget` | Yes | Your spending limit in USD (e.g. `50`) |
-| `github_token` | Yes | [github.com/settings/tokens](https://github.com/settings/tokens) -- Generate a classic token with `repo` scope |
+| `github_token` | Depends on `vcs_platform` | For `github`/`gitea` issue APIs and authenticated remote access |
 | `openai_api_key` | No | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) -- Enables web search tool |
 | `anthropic_api_key` | No | [console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys) -- Enables Claude Code CLI |
 
@@ -91,9 +91,12 @@ Create `ouroboros.config.json` in the repository root (you can copy from `ourobo
 ```json
 {
   "telegram_bot_token": "...",
+  "vcs_platform": "github",
   "github_token": "...",
   "github_user": "your_username",
   "github_repo": "ouroboros",
+  "gitea_base_url": "",
+  "git_remote_url": "",
   "total_budget": 50,
   "openrouter_api_key": "",
   "openai_api_key": "",
@@ -113,6 +116,11 @@ Create `ouroboros.config.json` in the repository root (you can copy from `ourobo
   "worker_start_method": "fork"
 }
 ```
+
+`vcs_platform` supports:
+- `github` (default): current behavior via GitHub + `gh` CLI tools.
+- `gitea`: uses Gitea API for issue tools and git remote for sync.
+- `git`: local-only git mode. Repository is initialized automatically in `ouroboros_repo_dir` on startup.
 
 ### Step 4: Run
 
@@ -174,7 +182,8 @@ Full text: [BIBLE.md](BIBLE.md)
 | `openrouter_api_key` | OpenRouter API key for LLM calls |
 | `telegram_bot_token` | Telegram Bot API token |
 | `total_budget` | Spending limit in USD |
-| `github_token` | GitHub personal access token with `repo` scope |
+| `vcs_platform` | Version control platform: `github`, `gitea`, or `git` |
+| `github_token` | Token used by GitHub/Gitea integrations and authenticated remotes (optional in pure `git`) |
 
 ### Optional Secrets (`ouroboros.config.json`)
 
@@ -187,8 +196,10 @@ Full text: [BIBLE.md](BIBLE.md)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `github_user` | *(required)* | GitHub username |
-| `github_repo` | `ouroboros` | GitHub repository name |
+| `github_user` | *(required for github/gitea)* | Repository owner/user |
+| `github_repo` | `ouroboros` | Repository name |
+| `gitea_base_url` | `` | Gitea instance URL (e.g. `https://gitea.example.com`) |
+| `git_remote_url` | `` | Optional explicit git remote URL (used for gitea/git modes) |
 | `model` | `qwen2.5:14b` | Primary LLM model |
 | `model_code` | `qwen2.5:14b` | Model for code editing tasks |
 | `model_light` | `google/gemini-3-pro-preview` | Model for lightweight tasks (dedup, compaction) |

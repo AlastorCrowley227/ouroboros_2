@@ -11,9 +11,12 @@ DEFAULT_CONFIG_PATH = Path("ouroboros.config.json")
 @dataclass(frozen=True)
 class RuntimeConfig:
     telegram_bot_token: str
-    github_token: str
-    github_user: str
-    github_repo: str
+    vcs_platform: str = "github"
+    github_token: str = ""
+    github_user: str = ""
+    github_repo: str = ""
+    gitea_base_url: str = ""
+    git_remote_url: str = ""
     anthropic_api_key: str = ""
     openrouter_api_key: str = ""
     openai_api_key: str = ""
@@ -34,9 +37,14 @@ class RuntimeConfig:
 
     def export_env(self) -> None:
         os.environ["TELEGRAM_BOT_TOKEN"] = self.telegram_bot_token
+        os.environ["OUROBOROS_VCS_PLATFORM"] = self.vcs_platform
         os.environ["GITHUB_TOKEN"] = self.github_token
         os.environ["GITHUB_USER"] = self.github_user
         os.environ["GITHUB_REPO"] = self.github_repo
+        if self.gitea_base_url:
+            os.environ["GITEA_BASE_URL"] = self.gitea_base_url
+        if self.git_remote_url:
+            os.environ["GIT_REMOTE_URL"] = self.git_remote_url
         os.environ["ANTHROPIC_API_KEY"] = self.anthropic_api_key
         if self.openrouter_api_key:
             os.environ["OPENROUTER_API_KEY"] = self.openrouter_api_key
@@ -90,11 +98,35 @@ def load_runtime_config(path: Optional[str] = None) -> RuntimeConfig:
     repo_dir = str(Path(data.get("ouroboros_repo_dir") or Path.cwd()).expanduser().resolve())
     home_dir = str(Path(data.get("ouroboros_home") or (Path.home() / ".ouroboros")).expanduser().resolve())
 
+    vcs_platform = str(data.get("vcs_platform", "github")).strip().lower() or "github"
+    if vcs_platform not in {"github", "gitea", "git"}:
+        raise AssertionError("vcs_platform must be one of: github, gitea, git")
+
+    github_token = str(data.get("github_token", "")).strip()
+    github_user = str(data.get("github_user", "")).strip()
+    github_repo = str(data.get("github_repo", "")).strip()
+    gitea_base_url = str(data.get("gitea_base_url", "")).strip()
+    git_remote_url = str(data.get("git_remote_url", "")).strip()
+
+    if vcs_platform == "github":
+        if not github_token:
+            github_token = _required(data, "github_token")
+        github_user = github_user or _required(data, "github_user")
+        github_repo = github_repo or _required(data, "github_repo")
+    elif vcs_platform == "gitea":
+        github_user = github_user or _required(data, "github_user")
+        github_repo = github_repo or _required(data, "github_repo")
+        if not (gitea_base_url or git_remote_url):
+            raise AssertionError("For vcs_platform=gitea, set gitea_base_url or git_remote_url")
+
     return RuntimeConfig(
         telegram_bot_token=_required(data, "telegram_bot_token"),
-        github_token=_required(data, "github_token"),
-        github_user=_required(data, "github_user"),
-        github_repo=_required(data, "github_repo"),
+        vcs_platform=vcs_platform,
+        github_token=github_token,
+        github_user=github_user,
+        github_repo=github_repo,
+        gitea_base_url=gitea_base_url,
+        git_remote_url=git_remote_url,
         anthropic_api_key=str(data.get("anthropic_api_key", "")),
         openrouter_api_key=str(data.get("openrouter_api_key", "")),
         openai_api_key=str(data.get("openai_api_key", "")),

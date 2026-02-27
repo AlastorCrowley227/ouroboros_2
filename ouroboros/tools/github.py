@@ -1,4 +1,4 @@
-"""GitHub tools: issues, comments, reactions."""
+"""Issue tools for GitHub/Gitea, with graceful fallback for plain git."""
 
 from __future__ import annotations
 
@@ -8,16 +8,18 @@ import os
 import subprocess
 from typing import Any, Dict, List, Optional
 
+import requests
+
 from ouroboros.tools.registry import ToolContext, ToolEntry
 
 log = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+
+def _vcs_platform() -> str:
+    return str(os.environ.get("OUROBOROS_VCS_PLATFORM", "github")).strip().lower() or "github"
+
 
 def _gh_cmd(args: List[str], ctx: ToolContext, timeout: int = 30, input_data: Optional[str] = None) -> str:
-    """Run `gh` CLI command and return stdout or error string."""
     cmd = ["gh"] + args
     try:
         res = subprocess.run(
@@ -30,7 +32,6 @@ def _gh_cmd(args: List[str], ctx: ToolContext, timeout: int = 30, input_data: Op
         )
         if res.returncode != 0:
             err = (res.stderr or "").strip()
-            # Only return first line of stderr, truncated to 200 chars for security
             return f"⚠️ GH_ERROR: {err.split(chr(10))[0][:200]}"
         return res.stdout.strip()
     except FileNotFoundError:
@@ -41,31 +42,70 @@ def _gh_cmd(args: List[str], ctx: ToolContext, timeout: int = 30, input_data: Op
         return f"⚠️ GH_ERROR: {e}"
 
 
-def _get_repo_slug(ctx: ToolContext) -> str:
-    """Get 'owner/repo' from git remote."""
+def _repo_owner_name() -> tuple[str, str]:
+    return os.environ.get("GITHUB_USER", "").strip(), os.environ.get("GITHUB_REPO", "").strip()
+
+
+def _gitea_base_url() -> str:
+    return str(os.environ.get("GITEA_BASE_URL", "")).strip().rstrip("/")
+
+
+def _gitea_headers() -> Dict[str, str]:
+    token = str(os.environ.get("GITHUB_TOKEN", "")).strip()
+    h = {"Accept": "application/json"}
+    if token:
+        h["Authorization"] = f"token {token}"
+    return h
+
+
+def _gitea_request(method: str, path: str, payload: Optional[Dict[str, Any]] = None) -> tuple[int, Any]:
+    base = _gitea_base_url()
+    if not base:
+        return 0, "GITEA_BASE_URL is not set"
+    url = f"{base}/api/v1{path}"
     try:
-        res = subprocess.run(
-            ["gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"],
-            cwd=str(ctx.repo_dir),
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if res.returncode == 0 and res.stdout.strip():
-            return res.stdout.strip()
+        r = requests.request(method, url, headers=_gitea_headers(), json=payload, timeout=30)
+    except Exception as e:
+        return 0, str(e)
+    try:
+        body = r.json()
     except Exception:
-        log.debug("Failed to get repo slug from gh", exc_info=True)
-    user = os.environ.get("GITHUB_USER", "")
-    repo = os.environ.get("GITHUB_REPO", "")
-    return f"{user}/{repo}"
+        body = r.text
+    return r.status_code, body
 
 
-# ---------------------------------------------------------------------------
-# Tool handlers
-# ---------------------------------------------------------------------------
+def _format_issue_list(issues: List[Dict[str, Any]], state: str) -> str:
+    if not issues:
+        return f"No {state} issues found."
+    lines = [f"**{len(issues)} {state} issue(s):**\n"]
+    for issue in issues:
+        labels = issue.get("labels") or []
+        labels_str = ", ".join((l.get("name") if isinstance(l, dict) else str(l)) for l in labels)
+        author_obj = issue.get("author") or issue.get("user") or {}
+        author = author_obj.get("login") or author_obj.get("username") or "unknown"
+        number = issue.get("number")
+        title = issue.get("title", "")
+        lines.append(f"- **#{number}** {title} (by @{author}{', labels: ' + labels_str if labels_str else ''})")
+        body = str(issue.get("body") or "").strip()
+        if body:
+            lines.append(f"  > {body[:200]}{'...' if len(body) > 200 else ''}")
+    return "\n".join(lines)
+
 
 def _list_issues(ctx: ToolContext, state: str = "open", labels: str = "", limit: int = 20) -> str:
-    """List GitHub issues with optional filters."""
+    platform = _vcs_platform()
+    if platform == "git":
+        return "⚠️ Issue tracker disabled for vcs_platform=git (local-only repo mode)."
+    if platform == "gitea":
+        owner, repo = _repo_owner_name()
+        params = [f"state={state}", f"limit={min(limit, 50)}"]
+        if labels:
+            params.append(f"labels={labels}")
+        code, body = _gitea_request("GET", f"/repos/{owner}/{repo}/issues?{'&'.join(params)}")
+        if code < 200 or code >= 300:
+            return f"⚠️ GITEA_ERROR: {body}"
+        return _format_issue_list(body if isinstance(body, list) else [], state)
+
     args = [
         "issue", "list",
         "--state", state,
@@ -74,193 +114,185 @@ def _list_issues(ctx: ToolContext, state: str = "open", labels: str = "", limit:
     ]
     if labels:
         args.extend(["--label", labels])
-
     raw = _gh_cmd(args, ctx)
     if raw.startswith("⚠️"):
         return raw
-
     try:
-        issues = json.loads(raw)
+        return _format_issue_list(json.loads(raw), state)
     except json.JSONDecodeError:
         return f"⚠️ Failed to parse issues JSON: {raw[:500]}"
 
-    if not issues:
-        return f"No {state} issues found."
-
-    lines = [f"**{len(issues)} {state} issue(s):**\n"]
-    for issue in issues:
-        labels_str = ", ".join(l.get("name", "") for l in issue.get("labels", []))
-        author = issue.get("author", {}).get("login", "unknown")
-        lines.append(
-            f"- **#{issue['number']}** {issue['title']}"
-            f" (by @{author}{', labels: ' + labels_str if labels_str else ''})"
-        )
-        body = (issue.get("body") or "").strip()
-        if body:
-            # Show first 200 chars of body
-            preview = body[:200] + ("..." if len(body) > 200 else "")
-            lines.append(f"  > {preview}")
-
-    return "\n".join(lines)
-
 
 def _get_issue(ctx: ToolContext, number: int) -> str:
-    """Get a single issue with full details and comments."""
     if number <= 0:
         return "⚠️ issue number must be positive"
+    platform = _vcs_platform()
+    if platform == "git":
+        return "⚠️ Issue tracker disabled for vcs_platform=git (local-only repo mode)."
 
-    args = [
-        "issue", "view", str(number),
-        "--json", "number,title,body,labels,createdAt,author,assignees,state,comments",
-    ]
+    if platform == "gitea":
+        owner, repo = _repo_owner_name()
+        code, issue = _gitea_request("GET", f"/repos/{owner}/{repo}/issues/{number}")
+        if code < 200 or code >= 300:
+            return f"⚠️ GITEA_ERROR: {issue}"
+        code_c, comments = _gitea_request("GET", f"/repos/{owner}/{repo}/issues/{number}/comments")
+        if code_c < 200 or code_c >= 300:
+            comments = []
+    else:
+        raw = _gh_cmd([
+            "issue", "view", str(number),
+            "--json", "number,title,body,labels,createdAt,author,assignees,state,comments",
+        ], ctx)
+        if raw.startswith("⚠️"):
+            return raw
+        try:
+            issue = json.loads(raw)
+            comments = issue.get("comments", [])
+        except json.JSONDecodeError:
+            return f"⚠️ Failed to parse issue JSON: {raw[:500]}"
 
-    raw = _gh_cmd(args, ctx)
-    if raw.startswith("⚠️"):
-        return raw
-
-    try:
-        issue = json.loads(raw)
-    except json.JSONDecodeError:
-        return f"⚠️ Failed to parse issue JSON: {raw[:500]}"
-
-    labels_str = ", ".join(l.get("name", "") for l in issue.get("labels", []))
-    author = issue.get("author", {}).get("login", "unknown")
+    labels = issue.get("labels") or []
+    labels_str = ", ".join((l.get("name") if isinstance(l, dict) else str(l)) for l in labels)
+    author_obj = issue.get("author") or issue.get("user") or {}
+    author = author_obj.get("login") or author_obj.get("username") or "unknown"
 
     lines = [
-        f"## Issue #{issue['number']}: {issue['title']}",
-        f"**State:** {issue['state']}  |  **Author:** @{author}",
+        f"## Issue #{issue.get('number')}: {issue.get('title', '')}",
+        f"**State:** {issue.get('state', 'unknown')}  |  **Author:** @{author}",
     ]
     if labels_str:
         lines.append(f"**Labels:** {labels_str}")
-
-    body = (issue.get("body") or "").strip()
+    body = str(issue.get("body") or "").strip()
     if body:
         lines.append(f"\n**Body:**\n{body[:3000]}")
 
-    comments = issue.get("comments", [])
     if comments:
         lines.append(f"\n**Comments ({len(comments)}):**")
-        for c in comments[:10]:  # limit to 10 most recent
-            c_author = c.get("author", {}).get("login", "unknown")
-            c_body = (c.get("body") or "").strip()[:500]
+        for c in comments[:10]:
+            c_author_obj = c.get("author") or c.get("user") or {}
+            c_author = c_author_obj.get("login") or c_author_obj.get("username") or "unknown"
+            c_body = str(c.get("body") or "").strip()[:500]
             lines.append(f"\n@{c_author}:\n{c_body}")
-
     return "\n".join(lines)
 
 
 def _comment_on_issue(ctx: ToolContext, number: int, body: str) -> str:
-    """Add a comment to an issue."""
     if number <= 0:
         return "⚠️ issue number must be positive"
-
     if not body or not body.strip():
         return "⚠️ Comment body cannot be empty."
+    platform = _vcs_platform()
+    if platform == "git":
+        return "⚠️ Issue tracker disabled for vcs_platform=git (local-only repo mode)."
+    if platform == "gitea":
+        owner, repo = _repo_owner_name()
+        code, resp = _gitea_request("POST", f"/repos/{owner}/{repo}/issues/{number}/comments", {"body": body})
+        if code < 200 or code >= 300:
+            return f"⚠️ GITEA_ERROR: {resp}"
+        return f"✅ Comment added to issue #{number}."
 
-    # Pass body via stdin to prevent argument injection
-    args = ["issue", "comment", str(number), "--body-file", "-"]
-    raw = _gh_cmd(args, ctx, input_data=body)
+    raw = _gh_cmd(["issue", "comment", str(number), "--body-file", "-"], ctx, input_data=body)
     if raw.startswith("⚠️"):
         return raw
     return f"✅ Comment added to issue #{number}."
 
 
 def _close_issue(ctx: ToolContext, number: int, comment: str = "") -> str:
-    """Close an issue with optional closing comment."""
     if number <= 0:
         return "⚠️ issue number must be positive"
-
     if comment and comment.strip():
-        # Add comment first
         result = _comment_on_issue(ctx, number, comment)
         if result.startswith("⚠️"):
             return result
+    platform = _vcs_platform()
+    if platform == "git":
+        return "⚠️ Issue tracker disabled for vcs_platform=git (local-only repo mode)."
+    if platform == "gitea":
+        owner, repo = _repo_owner_name()
+        code, resp = _gitea_request("PATCH", f"/repos/{owner}/{repo}/issues/{number}", {"state": "closed"})
+        if code < 200 or code >= 300:
+            return f"⚠️ GITEA_ERROR: {resp}"
+        return f"✅ Issue #{number} closed."
 
-    args = ["issue", "close", str(number)]
-    raw = _gh_cmd(args, ctx)
+    raw = _gh_cmd(["issue", "close", str(number)], ctx)
     if raw.startswith("⚠️"):
         return raw
     return f"✅ Issue #{number} closed."
 
 
 def _create_issue(ctx: ToolContext, title: str, body: str = "", labels: str = "") -> str:
-    """Create a new GitHub issue."""
     if not title or not title.strip():
         return "⚠️ Issue title cannot be empty."
+    platform = _vcs_platform()
+    if platform == "git":
+        return "⚠️ Issue tracker disabled for vcs_platform=git (local-only repo mode)."
 
-    # Use --flag=value form to prevent argument injection
+    if platform == "gitea":
+        owner, repo = _repo_owner_name()
+        payload: Dict[str, Any] = {"title": title}
+        if body:
+            payload["body"] = body
+        if labels:
+            payload["labels"] = [l.strip() for l in labels.split(",") if l.strip()]
+        code, resp = _gitea_request("POST", f"/repos/{owner}/{repo}/issues", payload)
+        if code < 200 or code >= 300:
+            return f"⚠️ GITEA_ERROR: {resp}"
+        num = (resp or {}).get("number") if isinstance(resp, dict) else "?"
+        return f"✅ Issue created: #{num}"
+
     args = ["issue", "create", f"--title={title}"]
-    if body:
-        # Pass body via stdin to prevent argument injection
-        args.append("--body-file=-")
-        raw = _gh_cmd(args, ctx, input_data=body)
-    else:
-        raw = _gh_cmd(args, ctx)
-
-    if labels:
-        # For existing issue, add labels separately
-        if not raw.startswith("⚠️"):
-            # Extract issue number from URL in raw output
-            import re
-            match = re.search(r'/issues/(\d+)', raw)
-            if match:
-                issue_num = int(match.group(1))
-                label_args = ["issue", "edit", str(issue_num), f"--add-label={labels}"]
-                _gh_cmd(label_args, ctx)
-
+    raw = _gh_cmd(args + (["--body-file=-"] if body else []), ctx, input_data=body if body else None)
+    if labels and not raw.startswith("⚠️"):
+        import re
+        match = re.search(r'/issues/(\d+)', raw)
+        if match:
+            _gh_cmd(["issue", "edit", str(int(match.group(1))), f"--add-label={labels}"], ctx)
     if raw.startswith("⚠️"):
         return raw
     return f"✅ Issue created: {raw}"
 
 
-# ---------------------------------------------------------------------------
-# Tool registration
-# ---------------------------------------------------------------------------
-
 def get_tools() -> List[ToolEntry]:
     return [
         ToolEntry("list_github_issues", {
             "name": "list_github_issues",
-            "description": "List GitHub issues. Use to check for new tasks, bug reports, or feature requests from the creator or contributors.",
+            "description": "List issues from configured platform (GitHub or Gitea).",
             "parameters": {"type": "object", "properties": {
-                "state": {"type": "string", "default": "open", "enum": ["open", "closed", "all"], "description": "Filter by state"},
-                "labels": {"type": "string", "default": "", "description": "Filter by label (comma-separated)"},
-                "limit": {"type": "integer", "default": 20, "description": "Max issues to return (max 50)"},
+                "state": {"type": "string", "default": "open", "enum": ["open", "closed", "all"]},
+                "labels": {"type": "string", "default": ""},
+                "limit": {"type": "integer", "default": 20},
             }, "required": []},
         }, _list_issues),
-
         ToolEntry("get_github_issue", {
             "name": "get_github_issue",
-            "description": "Get full details of a GitHub issue including body and comments.",
+            "description": "Get issue details from configured platform.",
             "parameters": {"type": "object", "properties": {
-                "number": {"type": "integer", "description": "Issue number"},
+                "number": {"type": "integer"},
             }, "required": ["number"]},
         }, _get_issue),
-
         ToolEntry("comment_on_issue", {
             "name": "comment_on_issue",
-            "description": "Add a comment to a GitHub issue. Use to respond to issues, share progress, or ask clarifying questions.",
+            "description": "Add a comment to an issue.",
             "parameters": {"type": "object", "properties": {
-                "number": {"type": "integer", "description": "Issue number"},
-                "body": {"type": "string", "description": "Comment text (markdown)"},
+                "number": {"type": "integer"},
+                "body": {"type": "string"},
             }, "required": ["number", "body"]},
         }, _comment_on_issue),
-
         ToolEntry("close_github_issue", {
             "name": "close_github_issue",
-            "description": "Close a GitHub issue with optional closing comment.",
+            "description": "Close an issue on configured platform.",
             "parameters": {"type": "object", "properties": {
-                "number": {"type": "integer", "description": "Issue number"},
-                "comment": {"type": "string", "default": "", "description": "Optional closing comment"},
+                "number": {"type": "integer"},
+                "comment": {"type": "string", "default": ""},
             }, "required": ["number"]},
         }, _close_issue),
-
         ToolEntry("create_github_issue", {
             "name": "create_github_issue",
-            "description": "Create a new GitHub issue. Use for tracking tasks, documenting bugs, or planning features.",
+            "description": "Create an issue on configured platform.",
             "parameters": {"type": "object", "properties": {
-                "title": {"type": "string", "description": "Issue title"},
-                "body": {"type": "string", "default": "", "description": "Issue body (markdown)"},
-                "labels": {"type": "string", "default": "", "description": "Labels (comma-separated)"},
+                "title": {"type": "string"},
+                "body": {"type": "string", "default": ""},
+                "labels": {"type": "string", "default": ""},
             }, "required": ["title"]},
         }, _create_issue),
     ]
