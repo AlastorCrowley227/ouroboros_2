@@ -1,5 +1,5 @@
 # =============================================================================
-# loop.py (полностью исправленная версия)
+# loop.py (полная исправленная версия)
 # =============================================================================
 """
 Ouroboros — LLM tool loop.
@@ -572,6 +572,32 @@ def _try_parse_json_toolcall(text: str) -> Optional[List[Dict[str, Any]]]:
     return None
 
 
+def _ensure_system_prompt(messages: List[Dict[str, Any]], system_prompt: str) -> List[Dict[str, Any]]:
+    """Гарантирует, что системный промпт есть в начале списка."""
+    # Если первое сообщение уже system и совпадает, не дублируем
+    if messages and messages[0].get("role") == "system" and messages[0].get("content") == system_prompt:
+        return messages
+    # Иначе вставляем в начало
+    return [{"role": "system", "content": system_prompt}] + messages
+
+
+def _maybe_compact_context(messages: List[Dict[str, Any]], num_ctx_limit: int, round_idx: int) -> List[Dict[str, Any]]:
+    """Сжимает контекст, если он превышает лимит."""
+    total_tokens = sum(estimate_tokens(str(m.get("content", ""))) for m in messages)
+    if total_tokens < num_ctx_limit * 0.7:  # 70% от лимита
+        return messages
+
+    # Сохраняем системное сообщение (если есть) и последние 6 сообщений
+    system_msgs = [m for m in messages if m.get("role") == "system"]
+    non_system = [m for m in messages if m.get("role") != "system"]
+    keep = non_system[-6:] if len(non_system) > 6 else non_system
+    if system_msgs:
+        keep = system_msgs + keep
+
+    log.warning(f"Context too large ({total_tokens} tokens) at round {round_idx}, compacting to {len(keep)} messages")
+    return keep
+
+
 def run_llm_loop(
     messages: List[Dict[str, Any]],
     tools: ToolRegistry,
@@ -602,17 +628,19 @@ def run_llm_loop(
     active_model = llm.default_model()
     active_effort = initial_effort
 
-    # Прогрев модели, чтобы она загрузилась с нужным контекстом (num_ctx)
+    # Прогрев модели, чтобы она загрузилась с нужным контекстом
+    llm.warmup(active_model)
+
+    # Определяем лимит контекста (берём из переменной окружения или используем 16384)
     try:
-        llm.chat(
-            messages=[{"role": "user", "content": "Hello"}],
-            model=active_model,
-            tools=None,
-            reasoning_effort="low",
-            max_tokens=5
-        )
-    except Exception as e:
-        log.debug(f"Warmup request failed (ignored): {e}")
+        num_ctx_limit = int(os.environ.get("OLLAMA_NUM_CTX", "16384"))
+    except (ValueError, TypeError):
+        num_ctx_limit = 16384
+
+    # Системный промпт (нужно передавать в функцию или брать из контекста)
+    # Здесь предполагаем, что он уже есть в messages[0] при старте, но может и не быть.
+    # Лучше передавать как параметр, но для простоты возьмём первый system, если есть.
+    system_prompt = next((m["content"] for m in messages if m.get("role") == "system"), "")
 
     llm_trace: Dict[str, Any] = {"assistant_notes": [], "tool_calls": []}
     accumulated_usage: Dict[str, Any] = {}
@@ -672,6 +700,13 @@ def run_llm_loop(
 
             # Inject owner messages (in-process queue + Drive mailbox)
             _drain_incoming_messages(messages, incoming_messages, drive_root, task_id, event_queue, _owner_msg_seen)
+
+            # Компактизация при необходимости
+            messages = _maybe_compact_context(messages, num_ctx_limit, round_idx)
+
+            # Гарантируем наличие системного промпта
+            if system_prompt:
+                messages = _ensure_system_prompt(messages, system_prompt)
 
             # Compact old tool history when needed
             # Check for LLM-requested compaction first (via compact_context tool)
