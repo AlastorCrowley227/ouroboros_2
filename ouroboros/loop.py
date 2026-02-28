@@ -108,55 +108,6 @@ def _message_content_to_text(content: Any) -> str:
     return str(content)
 
 
-def _extract_text_tool_call(content_text: str, tool_schemas: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
-    """Parse JSON-like function-call text into OpenAI-style tool_calls.
-
-    Handles model outputs like:
-    {"name": "update_identity", "arguments": {...}}
-    {"function_name": "get_task_result", "arguments": {...}}
-    """
-    txt = (content_text or "").strip()
-    if not txt or not txt.startswith("{"):
-        return []
-
-    try:
-        obj = json.loads(txt)
-    except Exception:
-        return []
-    if not isinstance(obj, dict):
-        return []
-
-    fn_name = obj.get("name") or obj.get("function_name") or obj.get("tool")
-    args = obj.get("arguments", {})
-    if not isinstance(fn_name, str) or not fn_name.strip():
-        return []
-    fn_name = fn_name.strip()
-
-    allowed_names = {
-        (t.get("function") or {}).get("name")
-        for t in (tool_schemas or [])
-        if isinstance(t, dict)
-    }
-    if allowed_names and fn_name not in allowed_names:
-        return []
-
-    if isinstance(args, str):
-        args_text = args
-    elif isinstance(args, dict):
-        args_text = json.dumps(args, ensure_ascii=False)
-    else:
-        args_text = "{}"
-
-    return [{
-        "id": f"text_toolcall_{int(time.time() * 1000)}",
-        "type": "function",
-        "function": {
-            "name": fn_name,
-            "arguments": args_text,
-        },
-    }]
-
-
 def _truncate_tool_result(result: Any) -> str:
     """
     Hard-cap tool result string to 15000 characters.
@@ -731,9 +682,6 @@ def run_llm_loop(
             tool_calls = msg.get("tool_calls") or []
             content = msg.get("content")
             content_text = _message_content_to_text(content)
-            if not tool_calls and content_text.strip():
-                # Some models return JSON-like tool call text instead of structured tool_calls.
-                tool_calls = _extract_text_tool_call(content_text, tool_schemas)
             # No tool calls — final response
             if not tool_calls:
                 return _handle_text_response(content_text, llm_trace, accumulated_usage)
