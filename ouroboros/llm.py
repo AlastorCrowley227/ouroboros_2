@@ -1,10 +1,16 @@
-"""Ollama-backed LLM client used by Ouroboros.
+# =============================================================================
+# llm.py (финальная версия с fallback для tools и улучшенным логированием)
+# =============================================================================
+"""
+Ollama-backed LLM client used by Ouroboros.
 
 Design goals:
 - Keep one place responsible for all HTTP contracts with Ollama.
 - Guarantee a first warmup call to /api/chat with explicit num_ctx.
 - Prefer a single endpoint strategy to avoid accidental model reloads with a
   smaller context window.
+- Fallback to text-based tool parsing if the /v1/chat/completions endpoint
+  fails (e.g., when the model or Ollama version does not support tools).
 """
 
 from __future__ import annotations
@@ -12,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import hashlib
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
@@ -113,6 +120,8 @@ class LLMClient:
         safe_payload = self._json_safe(payload)
         body = json.dumps(safe_payload)
 
+        log.debug("Sending to %s, payload size %d bytes", endpoint, len(body))
+
         try:
             response = requests.post(
                 url,
@@ -122,7 +131,19 @@ class LLMClient:
             )
             response.raise_for_status()
             return response.json()
+        except requests.exceptions.RequestException as exc:
+            # Log detailed information about the failed request
+            log.error(
+                "HTTP error %s: %s\nURL: %s\nPayload (first 500 chars): %s\nResponse (if any): %s",
+                type(exc).__name__,
+                exc,
+                url,
+                body[:500],
+                getattr(exc.response, 'text', 'N/A')[:500] if hasattr(exc, 'response') else 'N/A',
+            )
+            raise LLMTransportError(f"POST {endpoint} failed: {exc}") from exc
         except Exception as exc:
+            log.error("Unexpected error in _post_json: %s", exc, exc_info=True)
             raise LLMTransportError(f"POST {endpoint} failed: {exc}") from exc
 
     def _warmup_payload(self, model: str) -> Dict[str, Any]:
@@ -157,6 +178,48 @@ class LLMClient:
             self.ensure_model_ready(model)
         except Exception:
             log.warning("Warmup failed for %s", model, exc_info=True)
+
+    @staticmethod
+    def _try_parse_json_toolcall(text: str) -> Optional[List[Dict[str, Any]]]:
+        """
+        Ищет в тексте JSON-объект и пытается преобразовать его в tool call.
+        Поддерживает форматы: {"name": "...", "arguments": {...}} или {"function_name": "...", "arguments": {...}}.
+        Если JSON найден и успешно распарсен, возвращает список с одним tool call.
+        """
+        text = text.strip()
+        # Ищем первую '{' и последнюю '}'
+        start = text.find('{')
+        end = text.rfind('}')
+        if start == -1 or end == -1 or end <= start:
+            return None
+
+        json_str = text[start:end+1]
+        try:
+            data = json.loads(json_str)
+        except json.JSONDecodeError:
+            return None
+
+        call_id = "call_auto_" + hashlib.md5(json_str.encode()).hexdigest()[:8]
+
+        if "name" in data and "arguments" in data:
+            return [{
+                "id": call_id,
+                "type": "function",
+                "function": {
+                    "name": data["name"],
+                    "arguments": json.dumps(data["arguments"], ensure_ascii=False)
+                }
+            }]
+        if "function_name" in data and "arguments" in data:
+            return [{
+                "id": call_id,
+                "type": "function",
+                "function": {
+                    "name": data["function_name"],
+                    "arguments": json.dumps(data["arguments"], ensure_ascii=False)
+                }
+            }]
+        return None
 
     def _chat_v1(
         self,
@@ -235,20 +298,66 @@ class LLMClient:
         # Guarantee warmup even if first call is with tools.
         self.ensure_model_ready(model)
 
-        if self._endpoint_strategy == "hybrid" and not tools:
-            message, usage = self._chat_native(messages, model, max_tokens)
-        else:
-            message, usage = self._chat_v1(messages, model, max_tokens, tools, tool_choice)
+        # Determine primary endpoint based on strategy and presence of tools.
+        use_v1 = bool(tools) or self._endpoint_strategy == "single_v1"
 
-        log.info(
-            "LLM response model=%s strategy=%s prompt_eval_count=%s prompt_tokens=%s completion_tokens=%s",
-            model,
-            self._endpoint_strategy,
-            int(usage.get("prompt_eval_count") or 0),
-            int(usage.get("prompt_tokens") or 0),
-            int(usage.get("completion_tokens") or 0),
-        )
-        return message, usage
+        if use_v1:
+            try:
+                # Try the primary path (with tools if any)
+                message, usage = self._chat_v1(messages, model, max_tokens, tools, tool_choice)
+                log.info(
+                    "LLM response (v1) model=%s prompt_tokens=%s completion_tokens=%s",
+                    model,
+                    int(usage.get("prompt_tokens") or 0),
+                    int(usage.get("completion_tokens") or 0),
+                )
+                return message, usage
+            except Exception as e:
+                # If this was a tools request and the primary path failed, attempt fallback
+                if tools:
+                    log.warning(
+                        "v1 endpoint failed for tools request, falling back to native without tools: %s",
+                        e,
+                        exc_info=True,
+                    )
+                    try:
+                        # Retry without tools using native endpoint
+                        message, usage = self._chat_native(messages, model, max_tokens)
+                        # Try to parse tool calls from the response text
+                        content = message.get("content", "")
+                        parsed_tools = self._try_parse_json_toolcall(content)
+                        if parsed_tools:
+                            # Successfully parsed: create a message with tool_calls
+                            log.info("Fallback: parsed %d tool calls from native response", len(parsed_tools))
+                            message = {
+                                "content": "",  # avoid duplicate JSON
+                                "tool_calls": parsed_tools,
+                            }
+                        else:
+                            log.debug("Fallback: no tool calls found in native response")
+                        log.info(
+                            "LLM response (native fallback) model=%s prompt_tokens=%s completion_tokens=%s",
+                            model,
+                            int(usage.get("prompt_tokens") or 0),
+                            int(usage.get("completion_tokens") or 0),
+                        )
+                        return message, usage
+                    except Exception as fallback_e:
+                        log.error("Fallback also failed: %s", fallback_e, exc_info=True)
+                        raise LLMError(f"Both v1 and native fallback failed: {e}, {fallback_e}") from e
+                else:
+                    # No tools, just re-raise
+                    raise
+        else:
+            # No tools and hybrid strategy: use native directly
+            message, usage = self._chat_native(messages, model, max_tokens)
+            log.info(
+                "LLM response (native) model=%s prompt_tokens=%s completion_tokens=%s",
+                model,
+                int(usage.get("prompt_tokens") or 0),
+                int(usage.get("completion_tokens") or 0),
+            )
+            return message, usage
 
     def vision_query(
         self,
