@@ -624,41 +624,25 @@ def run_llm_loop(
 
     Returns: (final_text, accumulated_usage, llm_trace)
     """
-    # LLM-first: single default model, LLM switches via tool if needed
     active_model = llm.default_model()
     active_effort = initial_effort
-
-    # Прогрев модели, чтобы она загрузилась с нужным контекстом
-    llm.warmup(active_model)
-
-    # Определяем лимит контекста (берём из переменной окружения или используем 16384)
+    llm.ensure_model_ready(active_model)
     try:
         num_ctx_limit = int(os.environ.get("OLLAMA_NUM_CTX", "16384"))
     except (ValueError, TypeError):
         num_ctx_limit = 16384
-
-    # Системный промпт (нужно передавать в функцию или брать из контекста)
-    # Здесь предполагаем, что он уже есть в messages[0] при старте, но может и не быть.
-    # Лучше передавать как параметр, но для простоты возьмём первый system, если есть.
     system_prompt = next((m["content"] for m in messages if m.get("role") == "system"), "")
 
     llm_trace: Dict[str, Any] = {"assistant_notes": [], "tool_calls": []}
     accumulated_usage: Dict[str, Any] = {}
     max_retries = 3
-    # Wire module-level registry ref so tool_discovery handlers work outside run_llm_loop too
     from ouroboros.tools import tool_discovery as _td
     _td.set_registry(tools)
-
-    # Selective tool schemas: core set + meta-tools for discovery.
     tool_schemas = tools.schemas(core_only=True)
     tool_schemas, _enabled_extra_tools = _setup_dynamic_tools(tools, tool_schemas, messages)
-
-    # Set budget tracking on tool context for real-time usage events
     tools._ctx.event_queue = event_queue
     tools._ctx.task_id = task_id
-    # Thread-sticky executor for browser tools (Playwright sync requires greenlet thread-affinity)
     stateful_executor = _StatefulToolExecutor()
-    # Dedup set for per-task owner messages from Drive mailbox
     _owner_msg_seen: set = set()
     try:
         MAX_ROUNDS = max(1, int(os.environ.get("OUROBOROS_MAX_ROUNDS", "200")))
@@ -670,7 +654,6 @@ def run_llm_loop(
         while True:
             round_idx += 1
 
-            # Hard limit on rounds to prevent runaway tasks
             if round_idx > MAX_ROUNDS:
                 finish_reason = f"⚠️ Task exceeded MAX_ROUNDS ({MAX_ROUNDS}). Consider decomposing into subtasks via schedule_task."
                 messages.append({"role": "system", "content": f"[ROUND_LIMIT] {finish_reason}"})
@@ -686,10 +669,7 @@ def run_llm_loop(
                     log.warning("Failed to get final response after round limit", exc_info=True)
                     return finish_reason, accumulated_usage, llm_trace
 
-            # Soft self-check reminder every 50 rounds (LLM-first: agent decides, not code)
             _maybe_inject_self_check(round_idx, MAX_ROUNDS, messages, accumulated_usage, emit_progress)
-
-            # Apply LLM-driven model/effort switch (via switch_model tool)
             ctx = tools._ctx
             if ctx.active_model_override:
                 active_model = ctx.active_model_override
@@ -698,18 +678,10 @@ def run_llm_loop(
                 active_effort = normalize_reasoning_effort(ctx.active_effort_override, default=active_effort)
                 ctx.active_effort_override = None
 
-            # Inject owner messages (in-process queue + Drive mailbox)
             _drain_incoming_messages(messages, incoming_messages, drive_root, task_id, event_queue, _owner_msg_seen)
-
-            # Компактизация при необходимости
             messages = _maybe_compact_context(messages, num_ctx_limit, round_idx)
-
-            # Гарантируем наличие системного промпта
             if system_prompt:
                 messages = _ensure_system_prompt(messages, system_prompt)
-
-            # Compact old tool history when needed
-            # Check for LLM-requested compaction first (via compact_context tool)
             pending_compaction = getattr(tools._ctx, '_pending_compaction', None)
             if pending_compaction is not None:
                 messages = compact_tool_history_llm(messages, keep_recent=pending_compaction)
@@ -721,17 +693,11 @@ def run_llm_loop(
                 if len(messages) > 60:
                     messages = compact_tool_history(messages, keep_recent=6)
 
-            # --- LLM call with retry ---
             msg, cost = _call_llm_with_retry(
                 llm, messages, active_model, tool_schemas, active_effort,
                 max_retries, drive_logs, task_id, round_idx, event_queue, accumulated_usage, task_type
             )
-
-            # Fallback to another model if primary model returns empty responses
             if msg is None:
-                # Configurable fallback priority list.
-                # If explicit list is not set, derive candidates from configured/discovered models
-                # exposed by the active LLM client. This avoids surprising hardcoded defaults.
                 fallback_list_raw = os.environ.get("OUROBOROS_MODEL_FALLBACK_LIST", "").strip()
                 if fallback_list_raw:
                     fallback_candidates = [m.strip() for m in fallback_list_raw.split(",") if m.strip()]
@@ -752,27 +718,17 @@ def run_llm_loop(
                         f"All fallback models match the active one. Try rephrasing your request."
                     ), accumulated_usage, llm_trace
 
-                # Emit progress message so user sees fallback happening
                 fallback_progress = f"⚡ Fallback: {active_model} → {fallback_model} after empty response"
                 emit_progress(fallback_progress)
-
-                # Try fallback model (don't increment round_idx — this is still same logical round)
                 msg, fallback_cost = _call_llm_with_retry(
                     llm, messages, fallback_model, tool_schemas, active_effort,
                     max_retries, drive_logs, task_id, round_idx, event_queue, accumulated_usage, task_type
                 )
-
-                # If fallback also fails, give up
                 if msg is None:
                     return (
                         f"⚠️ Failed to get a response from the model after {max_retries} attempts. "
                         f"Fallback model ({fallback_model}) also returned no response."
                     ), accumulated_usage, llm_trace
-
-                # Fallback succeeded — continue processing with this msg
-                # (don't return — fall through to tool_calls processing below)
-
-            # --- Parse potential JSON tool call from text content ---
             tool_calls = msg.get("tool_calls") or []
             if not tool_calls:
                 content = msg.get("content")
@@ -781,15 +737,12 @@ def run_llm_loop(
                     if parsed:
                         tool_calls = parsed
                         msg["tool_calls"] = tool_calls
-                        msg["content"] = ""  # очищаем, чтобы не дублировать JSON как текст
+                        msg["content"] = ""
 
             content = msg.get("content")
             content_text = _message_content_to_text(content)
-            # No tool calls — final response
             if not tool_calls:
                 return _handle_text_response(content_text, llm_trace, accumulated_usage)
-
-            # Process tool calls
             messages.append({"role": "assistant", "content": content_text, "tool_calls": tool_calls})
 
             if content_text.strip():
@@ -800,16 +753,12 @@ def run_llm_loop(
                 tool_calls, tools, drive_logs, task_id, stateful_executor,
                 messages, llm_trace, emit_progress
             )
-
-
     finally:
-        # Cleanup thread-sticky executor for stateful tools
         if stateful_executor:
             try:
                 stateful_executor.shutdown(wait=False, cancel_futures=True)
             except Exception:
                 log.warning("Failed to shutdown stateful executor", exc_info=True)
-        # Cleanup per-task mailbox
         if drive_root is not None and task_id:
             try:
                 from ouroboros.owner_inject import cleanup_task_mailbox
@@ -906,6 +855,15 @@ def _call_llm_with_retry(
                     "task_id": task_id,
                     "round": round_idx, "attempt": attempt + 1,
                     "model": model,
+                    "request_messages_tail": [
+                        {
+                            "role": m.get("role"),
+                            "content": truncate_for_log(_message_content_to_text(m.get("content")), 300),
+                        }
+                        for m in messages[-8:]
+                    ],
+                    "request_has_tools": bool(tools),
+                    "raw_response": truncate_for_log(repr(msg), 1500),
                     "raw_content": repr(content)[:500] if content is not None else None,
                     "raw_content_text": content_text[:500] if content_text else None,
                     "raw_tool_calls": repr(tool_calls)[:500] if tool_calls else None,

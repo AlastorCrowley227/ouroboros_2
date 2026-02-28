@@ -87,6 +87,24 @@ python launcher.py
 └── ouroboros.config.example.json
 ```
 
+
+## Рекомендации по Ollama и большому контексту
+
+Чтобы агент стабильно работал с tools и длинной историей (16k–32k), рекомендуется создать отдельную модель с зафиксированным `num_ctx` и использовать её как `OUROBOROS_MODEL`:
+
+```bash
+cat > Modelfile.32k <<'EOF'
+FROM llama3.2:latest
+PARAMETER num_ctx 32768
+EOF
+
+ollama create llama3.2-32k:latest -f Modelfile.32k
+export OUROBOROS_MODEL=llama3.2-32k:latest
+export OLLAMA_NUM_CTX=32768
+```
+
+LLM-клиент Ouroboros делает idempotent warmup через `/api/chat` перед первым рабочим вызовом каждой модели, чтобы загрузить модель с нужным контекстом. По умолчанию используется стратегия `OLLAMA_ENDPOINT_STRATEGY=single_v1` (единый endpoint `/v1/chat/completions` для всех запросов после warmup), что снижает риск случайной перезагрузки модели с меньшим контекстом.
+
 ## Полезные команды
 
 ```bash
