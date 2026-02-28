@@ -89,6 +89,74 @@ READ_ONLY_PARALLEL_TOOLS = frozenset({
 STATEFUL_BROWSER_TOOLS = frozenset({"browse_page", "browser_action"})
 
 
+def _message_content_to_text(content: Any) -> str:
+    """Normalize assistant content to plain text for emptiness checks/logging."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: List[str] = []
+        for item in content:
+            if isinstance(item, dict):
+                txt = item.get("text")
+                if isinstance(txt, str):
+                    parts.append(txt)
+            elif isinstance(item, str):
+                parts.append(item)
+        return "\n".join(p for p in parts if p)
+    return str(content)
+
+
+def _extract_text_tool_call(content_text: str, tool_schemas: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    """Parse JSON-like function-call text into OpenAI-style tool_calls.
+
+    Handles model outputs like:
+    {"name": "update_identity", "arguments": {...}}
+    {"function_name": "get_task_result", "arguments": {...}}
+    """
+    txt = (content_text or "").strip()
+    if not txt or not txt.startswith("{"):
+        return []
+
+    try:
+        obj = json.loads(txt)
+    except Exception:
+        return []
+    if not isinstance(obj, dict):
+        return []
+
+    fn_name = obj.get("name") or obj.get("function_name") or obj.get("tool")
+    args = obj.get("arguments", {})
+    if not isinstance(fn_name, str) or not fn_name.strip():
+        return []
+    fn_name = fn_name.strip()
+
+    allowed_names = {
+        (t.get("function") or {}).get("name")
+        for t in (tool_schemas or [])
+        if isinstance(t, dict)
+    }
+    if allowed_names and fn_name not in allowed_names:
+        return []
+
+    if isinstance(args, str):
+        args_text = args
+    elif isinstance(args, dict):
+        args_text = json.dumps(args, ensure_ascii=False)
+    else:
+        args_text = "{}"
+
+    return [{
+        "id": f"text_toolcall_{int(time.time() * 1000)}",
+        "type": "function",
+        "function": {
+            "name": fn_name,
+            "arguments": args_text,
+        },
+    }]
+
+
 def _truncate_tool_result(result: Any) -> str:
     """
     Hard-cap tool result string to 15000 characters.
@@ -350,7 +418,7 @@ def _handle_tool_calls(
 
 
 def _handle_text_response(
-    content: Optional[str],
+    content: Any,
     llm_trace: Dict[str, Any],
     accumulated_usage: Dict[str, Any],
 ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
@@ -359,9 +427,10 @@ def _handle_text_response(
 
     Returns: (final_text, accumulated_usage, llm_trace)
     """
-    if content and content.strip():
-        llm_trace["assistant_notes"].append(content.strip()[:320])
-    return (content or ""), accumulated_usage, llm_trace
+    content_text = _message_content_to_text(content)
+    if content_text.strip():
+        llm_trace["assistant_notes"].append(content_text.strip()[:320])
+    return content_text, accumulated_usage, llm_trace
 
 
 def _maybe_inject_self_check(
@@ -616,12 +685,18 @@ def run_llm_loop(
 
             # Fallback to another model if primary model returns empty responses
             if msg is None:
-                # Configurable fallback priority list (Bible P3: no hardcoded behavior)
-                fallback_list_raw = os.environ.get(
-                    "OUROBOROS_MODEL_FALLBACK_LIST",
-                    "qwen2.5:14b,llama3.1:8b,mistral:7b"
-                )
-                fallback_candidates = [m.strip() for m in fallback_list_raw.split(",") if m.strip()]
+                # Configurable fallback priority list.
+                # If explicit list is not set, derive candidates from configured/discovered models
+                # exposed by the active LLM client. This avoids surprising hardcoded defaults.
+                fallback_list_raw = os.environ.get("OUROBOROS_MODEL_FALLBACK_LIST", "").strip()
+                if fallback_list_raw:
+                    fallback_candidates = [m.strip() for m in fallback_list_raw.split(",") if m.strip()]
+                else:
+                    try:
+                        fallback_candidates = llm.available_models()
+                    except Exception:
+                        log.warning("Failed to derive fallback model list from LLM client", exc_info=True)
+                        fallback_candidates = []
                 fallback_model = None
                 for candidate in fallback_candidates:
                     if candidate != active_model:
@@ -655,16 +730,20 @@ def run_llm_loop(
 
             tool_calls = msg.get("tool_calls") or []
             content = msg.get("content")
+            content_text = _message_content_to_text(content)
+            if not tool_calls and content_text.strip():
+                # Some models return JSON-like tool call text instead of structured tool_calls.
+                tool_calls = _extract_text_tool_call(content_text, tool_schemas)
             # No tool calls — final response
             if not tool_calls:
-                return _handle_text_response(content, llm_trace, accumulated_usage)
+                return _handle_text_response(content_text, llm_trace, accumulated_usage)
 
             # Process tool calls
-            messages.append({"role": "assistant", "content": content or "", "tool_calls": tool_calls})
+            messages.append({"role": "assistant", "content": content_text, "tool_calls": tool_calls})
 
-            if content and content.strip():
-                emit_progress(content.strip())
-                llm_trace["assistant_notes"].append(content.strip()[:320])
+            if content_text.strip():
+                emit_progress(content_text.strip())
+                llm_trace["assistant_notes"].append(content_text.strip()[:320])
 
             error_count = _handle_tool_calls(
                 tool_calls, tools, drive_logs, task_id, stateful_executor,
@@ -766,7 +845,8 @@ def _call_llm_with_retry(
             # Empty response = retry-worthy (model sometimes returns empty content with no tool_calls)
             tool_calls = msg.get("tool_calls") or []
             content = msg.get("content")
-            if not tool_calls and (not content or not content.strip()):
+            content_text = _message_content_to_text(content)
+            if not tool_calls and not content_text.strip():
                 log.warning("LLM returned empty response (no content, no tool_calls), attempt %d/%d", attempt + 1, max_retries)
 
                 # Log raw empty response for debugging
@@ -775,7 +855,8 @@ def _call_llm_with_retry(
                     "task_id": task_id,
                     "round": round_idx, "attempt": attempt + 1,
                     "model": model,
-                    "raw_content": repr(content)[:500] if content else None,
+                    "raw_content": repr(content)[:500] if content is not None else None,
+                    "raw_content_text": content_text[:500] if content_text else None,
                     "raw_tool_calls": repr(tool_calls)[:500] if tool_calls else None,
                     "finish_reason": msg.get("finish_reason") or msg.get("stop_reason"),
                 })
