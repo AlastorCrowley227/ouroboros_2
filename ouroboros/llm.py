@@ -78,6 +78,41 @@ class LLMClient:
             headers["Authorization"] = f"Bearer {self._api_key}"
         return headers
 
+    @staticmethod
+    def _json_safe(value: Any) -> Any:
+        """Best-effort conversion for JSON serialization of dynamic payloads."""
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, list):
+            return [LLMClient._json_safe(v) for v in value]
+        if isinstance(value, tuple):
+            return [LLMClient._json_safe(v) for v in value]
+        if isinstance(value, dict):
+            out: Dict[str, Any] = {}
+            for k, v in value.items():
+                out[str(k)] = LLMClient._json_safe(v)
+            return out
+        return str(value)
+
+    def _post_chat_payload(self, endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """POST payload to Ollama endpoint with serialization fallback."""
+        url = f"{self._base_url.rstrip('/')}{endpoint}"
+        try:
+            body = json.dumps(payload)
+        except TypeError:
+            safe_payload = self._json_safe(payload)
+            body = json.dumps(safe_payload)
+            log.warning("LLM payload contained non-serializable objects; coerced to JSON-safe values")
+
+        resp = requests.post(
+            url,
+            headers=self._headers(),
+            data=body,
+            timeout=(10, self._request_timeout_sec),
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     def chat(
         self,
         messages: List[Dict[str, Any]],
