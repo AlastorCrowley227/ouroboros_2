@@ -65,6 +65,12 @@ class LLMClient:
             self._request_timeout_sec = max(5, int(os.environ.get("OLLAMA_REQUEST_TIMEOUT_SEC", "45")))
         except (TypeError, ValueError):
             self._request_timeout_sec = 45
+        try:
+            # Increase context window beyond Ollama default (often 4096) to avoid
+            # aggressive prompt truncation on large agent contexts.
+            self._num_ctx = max(1024, int(os.environ.get("OLLAMA_NUM_CTX", "16384")))
+        except (TypeError, ValueError):
+            self._num_ctx = 16384
 
     def _headers(self) -> Dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -86,7 +92,10 @@ class LLMClient:
             "model": model,
             "messages": messages,
             "stream": False,
-            "options": {"num_predict": max_tokens},
+            "options": {
+                "num_predict": max_tokens,
+                "num_ctx": self._num_ctx,
+            },
         }
         if tools:
             payload["tools"] = tools

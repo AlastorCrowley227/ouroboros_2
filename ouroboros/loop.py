@@ -89,6 +89,25 @@ READ_ONLY_PARALLEL_TOOLS = frozenset({
 STATEFUL_BROWSER_TOOLS = frozenset({"browse_page", "browser_action"})
 
 
+def _message_content_to_text(content: Any) -> str:
+    """Normalize assistant content to plain text for emptiness checks/logging."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: List[str] = []
+        for item in content:
+            if isinstance(item, dict):
+                txt = item.get("text")
+                if isinstance(txt, str):
+                    parts.append(txt)
+            elif isinstance(item, str):
+                parts.append(item)
+        return "\n".join(p for p in parts if p)
+    return str(content)
+
+
 def _truncate_tool_result(result: Any) -> str:
     """
     Hard-cap tool result string to 15000 characters.
@@ -350,7 +369,7 @@ def _handle_tool_calls(
 
 
 def _handle_text_response(
-    content: Optional[str],
+    content: Any,
     llm_trace: Dict[str, Any],
     accumulated_usage: Dict[str, Any],
 ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
@@ -359,9 +378,10 @@ def _handle_text_response(
 
     Returns: (final_text, accumulated_usage, llm_trace)
     """
-    if content and content.strip():
-        llm_trace["assistant_notes"].append(content.strip()[:320])
-    return (content or ""), accumulated_usage, llm_trace
+    content_text = _message_content_to_text(content)
+    if content_text.strip():
+        llm_trace["assistant_notes"].append(content_text.strip()[:320])
+    return content_text, accumulated_usage, llm_trace
 
 
 def _maybe_inject_self_check(
@@ -661,16 +681,17 @@ def run_llm_loop(
 
             tool_calls = msg.get("tool_calls") or []
             content = msg.get("content")
+            content_text = _message_content_to_text(content)
             # No tool calls — final response
             if not tool_calls:
-                return _handle_text_response(content, llm_trace, accumulated_usage)
+                return _handle_text_response(content_text, llm_trace, accumulated_usage)
 
             # Process tool calls
-            messages.append({"role": "assistant", "content": content or "", "tool_calls": tool_calls})
+            messages.append({"role": "assistant", "content": content_text, "tool_calls": tool_calls})
 
-            if content and content.strip():
-                emit_progress(content.strip())
-                llm_trace["assistant_notes"].append(content.strip()[:320])
+            if content_text.strip():
+                emit_progress(content_text.strip())
+                llm_trace["assistant_notes"].append(content_text.strip()[:320])
 
             error_count = _handle_tool_calls(
                 tool_calls, tools, drive_logs, task_id, stateful_executor,
@@ -772,7 +793,8 @@ def _call_llm_with_retry(
             # Empty response = retry-worthy (model sometimes returns empty content with no tool_calls)
             tool_calls = msg.get("tool_calls") or []
             content = msg.get("content")
-            if not tool_calls and (not content or not content.strip()):
+            content_text = _message_content_to_text(content)
+            if not tool_calls and not content_text.strip():
                 log.warning("LLM returned empty response (no content, no tool_calls), attempt %d/%d", attempt + 1, max_retries)
 
                 # Log raw empty response for debugging
@@ -781,7 +803,8 @@ def _call_llm_with_retry(
                     "task_id": task_id,
                     "round": round_idx, "attempt": attempt + 1,
                     "model": model,
-                    "raw_content": repr(content)[:500] if content else None,
+                    "raw_content": repr(content)[:500] if content is not None else None,
+                    "raw_content_text": content_text[:500] if content_text else None,
                     "raw_tool_calls": repr(tool_calls)[:500] if tool_calls else None,
                     "finish_reason": msg.get("finish_reason") or msg.get("stop_reason"),
                 })
