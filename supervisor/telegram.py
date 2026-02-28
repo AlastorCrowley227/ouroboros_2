@@ -405,7 +405,13 @@ def send_with_budget(chat_id: int, text: str, log_text: Optional[str] = None,
     tg = get_tg()
 
     if fmt == "markdown":
-        ok, err = _send_markdown_telegram(chat_id, full)
+        ok = False
+        err = "unknown"
+        try:
+            ok, err = _send_markdown_telegram(chat_id, full)
+        except Exception as e:
+            err = f"markdown_pipeline_exception: {type(e).__name__}: {e}"
+
         if not ok:
             append_jsonl(
                 DRIVE_ROOT / "logs" / "supervisor.jsonl",
