@@ -1,5 +1,5 @@
 # =============================================================================
-# llm.py (финальная версия с fallback для tools и улучшенным логированием)
+# llm.py (исправленная версия для локальных моделей Ollama)
 # =============================================================================
 """
 Ollama-backed LLM client used by Ouroboros.
@@ -7,10 +7,9 @@ Ollama-backed LLM client used by Ouroboros.
 Design goals:
 - Keep one place responsible for all HTTP contracts with Ollama.
 - Guarantee a first warmup call to /api/chat with explicit num_ctx.
-- Prefer a single endpoint strategy to avoid accidental model reloads with a
-  smaller context window.
-- Fallback to text-based tool parsing if the /v1/chat/completions endpoint
-  fails (e.g., when the model or Ollama version does not support tools).
+- For local models, always use /api/chat and emulate tools via JSON parsing,
+  avoiding 400 errors due to missing tool support.
+- For remote models (OpenRouter), use /v1/chat/completions as before.
 """
 
 from __future__ import annotations
@@ -71,6 +70,14 @@ def fetch_ollama_models(base_url: str) -> List[str]:
         return []
 
 
+def is_local_model(model: str) -> bool:
+    """Heuristic: models without a slash or known Ollama models are considered local."""
+    if '/' in model:
+        return False  # e.g., "anthropic/claude-sonnet"
+    # Common Ollama model names: "llama3.2", "qwen2.5", etc.
+    return True
+
+
 class LLMClient:
     """HTTP wrapper around Ollama with context-safe warmup semantics."""
 
@@ -80,7 +87,7 @@ class LLMClient:
         self._request_timeout_sec = self._read_int_env("OLLAMA_REQUEST_TIMEOUT_SEC", 45, min_value=5)
         self._num_ctx = self._read_int_env("OLLAMA_NUM_CTX", 32768, min_value=1024)
 
-        # Endpoint strategy:
+        # Endpoint strategy (only relevant for remote models):
         # - single_v1 (default): use /v1/chat/completions for all requests.
         # - hybrid: tools via /v1/chat/completions, plain chat via /api/chat.
         strategy = str(os.environ.get("OLLAMA_ENDPOINT_STRATEGY", "single_v1")).strip().lower()
@@ -298,7 +305,33 @@ class LLMClient:
         # Guarantee warmup even if first call is with tools.
         self.ensure_model_ready(model)
 
-        # Determine primary endpoint based on strategy and presence of tools.
+        # For local models, always use native endpoint and emulate tools via JSON parsing
+        if is_local_model(model):
+            # Call native without tools
+            message, usage = self._chat_native(messages, model, max_tokens)
+
+            # If tools were requested, try to parse JSON from the response
+            if tools:
+                content = message.get("content", "")
+                parsed_tools = self._try_parse_json_toolcall(content)
+                if parsed_tools:
+                    log.info("Local model: parsed %d tool calls from text", len(parsed_tools))
+                    message = {
+                        "content": "",  # avoid duplicate JSON
+                        "tool_calls": parsed_tools,
+                    }
+                else:
+                    log.debug("Local model: no tool calls found in response")
+
+            log.info(
+                "LLM response (native) model=%s prompt_tokens=%s completion_tokens=%s",
+                model,
+                int(usage.get("prompt_tokens") or 0),
+                int(usage.get("completion_tokens") or 0),
+            )
+            return message, usage
+
+        # Remote model: use OpenRouter-style endpoint with strategy
         use_v1 = bool(tools) or self._endpoint_strategy == "single_v1"
 
         if use_v1:
