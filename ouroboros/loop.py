@@ -1,5 +1,5 @@
 # =============================================================================
-# loop.py (исправленная версия с парсингом JSON-тулколлов)
+# loop.py (полностью исправленная версия)
 # =============================================================================
 """
 Ouroboros — LLM tool loop.
@@ -531,23 +531,25 @@ def _drain_incoming_messages(
 
 def _try_parse_json_toolcall(text: str) -> Optional[List[Dict[str, Any]]]:
     """
-    Attempt to parse a JSON object from the text and convert it to a tool call.
-    Supports two formats:
-      - {"name": "...", "arguments": {...}}
-      - {"function_name": "...", "arguments": {...}}
-    Returns a list with a single tool call dictionary (OpenAI format) or None.
+    Ищет в тексте JSON-объект и пытается преобразовать его в tool call.
+    Поддерживает форматы: {"name": "...", "arguments": {...}} или {"function_name": "...", "arguments": {...}}.
+    Если JSON найден и успешно распарсен, возвращает список с одним tool call.
     """
     text = text.strip()
-    if not (text.startswith('{') and text.endswith('}')):
+    # Ищем первую '{' и последнюю '}'
+    start = text.find('{')
+    end = text.rfind('}')
+    if start == -1 or end == -1 or end <= start:
         return None
+
+    json_str = text[start:end+1]
     try:
-        data = json.loads(text)
+        data = json.loads(json_str)
     except json.JSONDecodeError:
         return None
 
-    # Generate a stable but unique ID
     import hashlib
-    call_id = "call_auto_" + hashlib.md5(text.encode()).hexdigest()[:8]
+    call_id = "call_auto_" + hashlib.md5(json_str.encode()).hexdigest()[:8]
 
     if "name" in data and "arguments" in data:
         return [{
@@ -599,6 +601,18 @@ def run_llm_loop(
     # LLM-first: single default model, LLM switches via tool if needed
     active_model = llm.default_model()
     active_effort = initial_effort
+
+    # Прогрев модели, чтобы она загрузилась с нужным контекстом (num_ctx)
+    try:
+        llm.chat(
+            messages=[{"role": "user", "content": "Hello"}],
+            model=active_model,
+            tools=None,
+            reasoning_effort="low",
+            max_tokens=5
+        )
+    except Exception as e:
+        log.debug(f"Warmup request failed (ignored): {e}")
 
     llm_trace: Dict[str, Any] = {"assistant_notes": [], "tool_calls": []}
     accumulated_usage: Dict[str, Any] = {}
