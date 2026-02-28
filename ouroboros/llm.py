@@ -88,7 +88,9 @@ class LLMClient:
         tool_choice: str = "auto",
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Single LLM call. Returns: (response_message_dict, usage_dict with cost)."""
-        payload: Dict[str, Any] = {
+        # Build payloads per endpoint because Ollama applies some options (e.g. num_ctx)
+        # more reliably on native /api/chat.
+        payload_native: Dict[str, Any] = {
             "model": model,
             "messages": messages,
             "stream": False,
@@ -98,16 +100,31 @@ class LLMClient:
             },
         }
         if tools:
-            payload["tools"] = tools
+            payload_native["tools"] = tools
         if tool_choice and tool_choice != "auto":
-            payload["tool_choice"] = tool_choice
+            payload_native["tool_choice"] = tool_choice
 
-        # Prefer OpenAI-compatible endpoint; fallback to native Ollama endpoint.
-        endpoints = ["/v1/chat/completions", "/api/chat"]
+        payload_openai: Dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "stream": False,
+            "options": {
+                "num_predict": max_tokens,
+                "num_ctx": self._num_ctx,
+            },
+        }
+        if tools:
+            payload_openai["tools"] = tools
+        if tool_choice and tool_choice != "auto":
+            payload_openai["tool_choice"] = tool_choice
+
+        # Prefer native Ollama endpoint by default; OpenAI endpoint remains fallback.
+        endpoints = ["/api/chat", "/v1/chat/completions"] if self._prefer_native_api else ["/v1/chat/completions", "/api/chat"]
         endpoint_errors: List[str] = []
         data: Dict[str, Any] = {}
         for endpoint in endpoints:
             try:
+                payload = payload_native if endpoint == "/api/chat" else payload_openai
                 resp = requests.post(
                     f"{self._base_url.rstrip('/')}{endpoint}",
                     headers=self._headers(),
