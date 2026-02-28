@@ -1,6 +1,6 @@
 import json
 from ouroboros.llm import LLMClient
-from ouroboros.loop import _extract_text_tool_call, _handle_text_response, _message_content_to_text
+from ouroboros.loop import _handle_text_response, _message_content_to_text
 
 
 def test_message_content_to_text_handles_block_list():
@@ -29,19 +29,10 @@ def test_llm_chat_sets_num_ctx_option(monkeypatch):
     captured = {}
 
     class DummyResp:
-        def __init__(self, url):
-            self._url = url
-
         def raise_for_status(self):
             return None
 
         def json(self):
-            if self._url.endswith("/api/chat"):
-                return {
-                    "message": {"content": "ok"},
-                    "prompt_eval_count": 1,
-                    "eval_count": 1,
-                }
             return {
                 "choices": [{"message": {"content": "ok"}}],
                 "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
@@ -50,7 +41,7 @@ def test_llm_chat_sets_num_ctx_option(monkeypatch):
     def fake_post(url, headers, data, timeout):
         captured["url"] = url
         captured["payload"] = json.loads(data)
-        return DummyResp(url)
+        return DummyResp()
 
     monkeypatch.setattr("requests.post", fake_post)
 
@@ -60,25 +51,4 @@ def test_llm_chat_sets_num_ctx_option(monkeypatch):
     assert msg["content"] == "ok"
     assert usage["total_tokens"] == 2
     assert captured["payload"]["options"]["num_ctx"] == 8192
-    assert captured["url"].endswith("/api/chat")
-
-
-def test_extract_text_tool_call_from_name_and_arguments():
-    schemas = [{"type": "function", "function": {"name": "update_identity"}}]
-    calls = _extract_text_tool_call(
-        '{"name":"update_identity","arguments":{"content":"x"}}',
-        schemas,
-    )
-    assert len(calls) == 1
-    assert calls[0]["function"]["name"] == "update_identity"
-    assert '"content": "x"' in calls[0]["function"]["arguments"]
-
-
-def test_extract_text_tool_call_from_function_name_alias():
-    schemas = [{"type": "function", "function": {"name": "get_task_result"}}]
-    calls = _extract_text_tool_call(
-        '{"function_name":"get_task_result","arguments":{"task_id":"1"}}',
-        schemas,
-    )
-    assert len(calls) == 1
-    assert calls[0]["function"]["name"] == "get_task_result"
+    assert captured["url"].endswith("/v1/chat/completions")

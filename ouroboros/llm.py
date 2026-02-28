@@ -72,9 +72,6 @@ class LLMClient:
         except (TypeError, ValueError):
             self._num_ctx = 16384
 
-        prefer_native = str(os.environ.get("OLLAMA_PREFER_NATIVE_API", "1")).strip().lower()
-        self._prefer_native_api = prefer_native not in ("0", "false", "no", "off")
-
     def _headers(self) -> Dict[str, str]:
         headers = {"Content-Type": "application/json"}
         if self._api_key:
@@ -111,14 +108,10 @@ class LLMClient:
             "model": model,
             "messages": messages,
             "stream": False,
-            "max_tokens": max_tokens,
-            # Keep options for compatibility with newer Ollama OpenAI adapters.
             "options": {
                 "num_predict": max_tokens,
                 "num_ctx": self._num_ctx,
             },
-            # Some adapters read num_ctx from top-level too.
-            "num_ctx": self._num_ctx,
         }
         if tools:
             payload_openai["tools"] = tools
