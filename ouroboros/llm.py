@@ -1,3 +1,6 @@
+# =============================================================================
+# llm.py (исправленная версия с инициализацией _prefer_native_api)
+# =============================================================================
 """
 Ouroboros — local LLM client via Ollama.
 
@@ -71,6 +74,8 @@ class LLMClient:
             self._num_ctx = max(1024, int(os.environ.get("OLLAMA_NUM_CTX", "16384")))
         except (TypeError, ValueError):
             self._num_ctx = 16384
+        # Определяем, какой эндпоинт использовать первым (native /api/chat или openai-compat)
+        self._prefer_native_api = os.environ.get("OLLAMA_PREFER_NATIVE_API", "0").lower() in ("1", "true", "yes")
 
     def _headers(self) -> Dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -153,7 +158,7 @@ class LLMClient:
         if tool_choice and tool_choice != "auto":
             payload_openai["tool_choice"] = tool_choice
 
-        # Prefer native Ollama endpoint by default; OpenAI endpoint remains fallback.
+        # Определяем порядок эндпоинтов согласно настройке
         endpoints = ["/api/chat", "/v1/chat/completions"] if self._prefer_native_api else ["/v1/chat/completions", "/api/chat"]
         endpoint_errors: List[str] = []
         data: Dict[str, Any] = {}
