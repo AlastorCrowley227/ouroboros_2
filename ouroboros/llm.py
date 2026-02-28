@@ -61,6 +61,10 @@ class LLMClient:
     def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None):
         self._api_key = api_key or os.environ.get("OLLAMA_API_KEY", "")
         self._base_url = base_url or os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
+        try:
+            self._request_timeout_sec = max(5, int(os.environ.get("OLLAMA_REQUEST_TIMEOUT_SEC", "45")))
+        except (TypeError, ValueError):
+            self._request_timeout_sec = 45
 
     def _headers(self) -> Dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -91,7 +95,7 @@ class LLMClient:
 
         # Prefer OpenAI-compatible endpoint; fallback to native Ollama endpoint.
         endpoints = ["/v1/chat/completions", "/api/chat"]
-        last_error: Optional[Exception] = None
+        endpoint_errors: List[str] = []
         data: Dict[str, Any] = {}
         for endpoint in endpoints:
             try:
@@ -99,7 +103,7 @@ class LLMClient:
                     f"{self._base_url.rstrip('/')}{endpoint}",
                     headers=self._headers(),
                     data=json.dumps(payload),
-                    timeout=180,
+                    timeout=(10, self._request_timeout_sec),
                 )
                 resp.raise_for_status()
                 data = resp.json()
@@ -116,11 +120,15 @@ class LLMClient:
                     }
                 break
             except Exception as e:
-                last_error = e
+                endpoint_errors.append(f"{endpoint}: {type(e).__name__}: {e}")
                 continue
 
         if not data:
-            raise RuntimeError(f"Ollama chat call failed: {last_error}")
+            errs = " | ".join(endpoint_errors) if endpoint_errors else "unknown"
+            raise RuntimeError(
+                "Ollama chat call failed "
+                f"(base_url={self._base_url}, timeout={self._request_timeout_sec}s): {errs}"
+            )
 
         usage = data.get("usage") or {}
         choices = data.get("choices") or [{}]
