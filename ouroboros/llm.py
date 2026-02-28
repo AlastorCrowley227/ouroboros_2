@@ -1,11 +1,10 @@
-# =============================================================================
-# llm.py (финальная версия с прогревом и разделением эндпоинтов)
-# =============================================================================
-"""
-Ouroboros — local LLM client via Ollama.
+"""Ollama-backed LLM client used by Ouroboros.
 
-The only module that communicates with the LLM API.
-Contract: chat(), default_model(), available_models(), add_usage().
+Design goals:
+- Keep one place responsible for all HTTP contracts with Ollama.
+- Guarantee a first warmup call to /api/chat with explicit num_ctx.
+- Prefer a single endpoint strategy to avoid accidental model reloads with a
+  smaller context window.
 """
 
 from __future__ import annotations
@@ -22,10 +21,22 @@ log = logging.getLogger(__name__)
 DEFAULT_LIGHT_MODEL = "qwen2.5:3b"
 
 
+class LLMError(RuntimeError):
+    """Base error for all LLM client failures."""
+
+
+class LLMTransportError(LLMError):
+    """HTTP-level failure while calling Ollama."""
+
+
+class LLMProtocolError(LLMError):
+    """Unexpected JSON schema from Ollama response."""
+
+
 def normalize_reasoning_effort(value: str, default: str = "medium") -> str:
     allowed = {"none", "minimal", "low", "medium", "high", "xhigh"}
-    v = str(value or "").strip().lower()
-    return v if v in allowed else default
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in allowed else default
 
 
 def reasoning_rank(value: str) -> int:
@@ -47,32 +58,37 @@ def fetch_ollama_models(base_url: str) -> List[str]:
         resp = requests.get(f"{base_url.rstrip('/')}/api/tags", timeout=10)
         resp.raise_for_status()
         data = resp.json()
-        out = []
-        for m in data.get("models", []):
-            name = m.get("name")
-            if name:
-                out.append(name)
-        return out
+        return [m.get("name") for m in data.get("models", []) if m.get("name")]
     except Exception:
         log.debug("Failed to fetch Ollama model list", exc_info=True)
         return []
 
 
 class LLMClient:
-    """Ollama API wrapper. All LLM calls go through this class."""
+    """HTTP wrapper around Ollama with context-safe warmup semantics."""
 
     def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None):
         self._api_key = api_key or os.environ.get("OLLAMA_API_KEY", "")
         self._base_url = base_url or os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
+        self._request_timeout_sec = self._read_int_env("OLLAMA_REQUEST_TIMEOUT_SEC", 45, min_value=5)
+        self._num_ctx = self._read_int_env("OLLAMA_NUM_CTX", 32768, min_value=1024)
+
+        # Endpoint strategy:
+        # - single_v1 (default): use /v1/chat/completions for all requests.
+        # - hybrid: tools via /v1/chat/completions, plain chat via /api/chat.
+        strategy = str(os.environ.get("OLLAMA_ENDPOINT_STRATEGY", "single_v1")).strip().lower()
+        self._endpoint_strategy = strategy if strategy in {"single_v1", "hybrid"} else "single_v1"
+
+        # Warmup is tracked per model; first call for each model will load n_ctx.
+        self._warmed_models: set[str] = set()
+
+    @staticmethod
+    def _read_int_env(name: str, default: int, min_value: int) -> int:
         try:
-            self._request_timeout_sec = max(5, int(os.environ.get("OLLAMA_REQUEST_TIMEOUT_SEC", "45")))
+            value = int(os.environ.get(name, str(default)))
         except (TypeError, ValueError):
-            self._request_timeout_sec = 45
-        try:
-            # Увеличиваем контекст, чтобы избежать обрезания
-            self._num_ctx = max(1024, int(os.environ.get("OLLAMA_NUM_CTX", "16384")))
-        except (TypeError, ValueError):
-            self._num_ctx = 16384
+            value = default
+        return max(min_value, value)
 
     def _headers(self) -> Dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -82,7 +98,6 @@ class LLMClient:
 
     @staticmethod
     def _json_safe(value: Any) -> Any:
-        """Best-effort conversion for JSON serialization of dynamic payloads."""
         if value is None or isinstance(value, (str, int, float, bool)):
             return value
         if isinstance(value, list):
@@ -90,51 +105,121 @@ class LLMClient:
         if isinstance(value, tuple):
             return [LLMClient._json_safe(v) for v in value]
         if isinstance(value, dict):
-            out: Dict[str, Any] = {}
-            for k, v in value.items():
-                out[str(k)] = LLMClient._json_safe(v)
-            return out
+            return {str(k): LLMClient._json_safe(v) for k, v in value.items()}
         return str(value)
 
-    def _post_chat_payload(self, endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """POST payload to Ollama endpoint with serialization fallback."""
+    def _post_json(self, endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         url = f"{self._base_url.rstrip('/')}{endpoint}"
-        try:
-            body = json.dumps(payload)
-        except TypeError:
-            safe_payload = self._json_safe(payload)
-            body = json.dumps(safe_payload)
-            log.warning("LLM payload contained non-serializable objects; coerced to JSON-safe values")
+        safe_payload = self._json_safe(payload)
+        body = json.dumps(safe_payload)
 
-        log.debug("Sending to %s: %s", endpoint, body[:500])
-        resp = requests.post(
-            url,
-            headers=self._headers(),
-            data=body,
-            timeout=(10, self._request_timeout_sec),
+        try:
+            response = requests.post(
+                url,
+                headers=self._headers(),
+                data=body,
+                timeout=(10, self._request_timeout_sec),
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as exc:
+            raise LLMTransportError(f"POST {endpoint} failed: {exc}") from exc
+
+    def _warmup_payload(self, model: str) -> Dict[str, Any]:
+        return {
+            "model": model,
+            "stream": False,
+            "messages": [{"role": "user", "content": "warmup"}],
+            "options": {
+                "num_predict": 1,
+                "num_ctx": self._num_ctx,
+            },
+        }
+
+    def ensure_model_ready(self, model: str) -> None:
+        """Warm model once with explicit num_ctx using /api/chat."""
+        if model in self._warmed_models:
+            return
+
+        data = self._post_json("/api/chat", self._warmup_payload(model))
+        prompt_eval_count = int(data.get("prompt_eval_count") or 0)
+        log.info(
+            "Warmup finished for model=%s num_ctx=%s prompt_eval_count=%s",
+            model,
+            self._num_ctx,
+            prompt_eval_count,
         )
-        resp.raise_for_status()
-        return resp.json()
+        self._warmed_models.add(model)
 
+    # Backward-compatible name used by older call sites.
     def warmup(self, model: str) -> None:
-        """
-        Загружает модель с нужным контекстом через /api/chat.
-        Выполняется до основного цикла, чтобы модель была в памяти с правильным num_ctx.
-        """
         try:
-            payload = {
-                "model": model,
-                "messages": [{"role": "user", "content": "Hello"}],
-                "stream": False,
-                "options": {
-                    "num_predict": 5,
-                    "num_ctx": self._num_ctx,
-                },
-            }
-            self._post_chat_payload("/api/chat", payload)
-            log.info(f"Model {model} warmed up with context {self._num_ctx}")
-        except Exception as e:
-            log.warning(f"Warmup failed for {model}: {e}")
+            self.ensure_model_ready(model)
+        except Exception:
+            log.warning("Warmup failed for %s", model, exc_info=True)
+
+    def _chat_v1(
+        self,
+        messages: List[Dict[str, Any]],
+        model: str,
+        max_tokens: int,
+        tools: Optional[List[Dict[str, Any]]],
+        tool_choice: str,
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        payload: Dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "stream": False,
+            "max_tokens": max_tokens,
+            "options": {
+                "num_predict": max_tokens,
+                "num_ctx": self._num_ctx,
+            },
+        }
+        if tools:
+            payload["tools"] = tools
+            if tool_choice and tool_choice != "auto":
+                payload["tool_choice"] = tool_choice
+
+        data = self._post_json("/v1/chat/completions", payload)
+        choices = data.get("choices") or []
+        if not choices or not isinstance(choices[0], dict):
+            raise LLMProtocolError("Missing choices[0] in /v1/chat/completions response")
+
+        message = choices[0].get("message") or {}
+        usage = data.get("usage") or {}
+        usage.setdefault("prompt_tokens", int(data.get("prompt_eval_count") or 0))
+        usage.setdefault("completion_tokens", int(data.get("eval_count") or 0))
+        usage.setdefault("total_tokens", int(usage.get("prompt_tokens") or 0) + int(usage.get("completion_tokens") or 0))
+        usage.setdefault("cost", 0.0)
+        usage["prompt_eval_count"] = int(data.get("prompt_eval_count") or usage.get("prompt_tokens") or 0)
+        return message, usage
+
+    def _chat_native(
+        self,
+        messages: List[Dict[str, Any]],
+        model: str,
+        max_tokens: int,
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        payload = {
+            "model": model,
+            "messages": messages,
+            "stream": False,
+            "options": {
+                "num_predict": max_tokens,
+                "num_ctx": self._num_ctx,
+            },
+        }
+        data = self._post_json("/api/chat", payload)
+        message = data.get("message") or {}
+        usage = {
+            "prompt_tokens": int(data.get("prompt_eval_count") or 0),
+            "completion_tokens": int(data.get("eval_count") or 0),
+            "total_tokens": int(data.get("prompt_eval_count") or 0) + int(data.get("eval_count") or 0),
+            "cost": 0.0,
+            "prompt_eval_count": int(data.get("prompt_eval_count") or 0),
+        }
+        return message, usage
 
     def chat(
         self,
@@ -145,52 +230,25 @@ class LLMClient:
         max_tokens: int = 16384,
         tool_choice: str = "auto",
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        """
-        Вызов LLM.
-        Если есть tools — используем /v1/chat/completions (openai-совместимый),
-        иначе — /api/chat (надёжнее принимает num_ctx).
-        Перед вызовом с инструментами рекомендуется выполнить warmup для загрузки модели.
-        """
-        if tools:
-            # Для инструментов используем openai-совместимый эндпоинт
-            payload = {
-                "model": model,
-                "messages": messages,
-                "stream": False,
-                "options": {
-                    "num_predict": max_tokens,
-                    "num_ctx": self._num_ctx,
-                },
-                "tools": tools,
-            }
-            if tool_choice and tool_choice != "auto":
-                payload["tool_choice"] = tool_choice
-            data = self._post_chat_payload("/v1/chat/completions", payload)
-            usage = data.get("usage") or {}
-            choices = data.get("choices") or [{}]
-            msg = (choices[0] if choices else {}).get("message") or {}
-            usage.setdefault("cost", 0.0)
-            return msg, usage
+        del reasoning_effort  # kept for API compatibility
+
+        # Guarantee warmup even if first call is with tools.
+        self.ensure_model_ready(model)
+
+        if self._endpoint_strategy == "hybrid" and not tools:
+            message, usage = self._chat_native(messages, model, max_tokens)
         else:
-            # Без инструментов используем /api/chat — он гарантированно принимает num_ctx
-            payload = {
-                "model": model,
-                "messages": messages,
-                "stream": False,
-                "options": {
-                    "num_predict": max_tokens,
-                    "num_ctx": self._num_ctx,
-                },
-            }
-            data = self._post_chat_payload("/api/chat", payload)
-            message = data.get("message") or {}
-            usage = {
-                "prompt_tokens": data.get("prompt_eval_count", 0),
-                "completion_tokens": data.get("eval_count", 0),
-                "total_tokens": (data.get("prompt_eval_count", 0) + data.get("eval_count", 0)),
-                "cost": 0.0,
-            }
-            return message, usage
+            message, usage = self._chat_v1(messages, model, max_tokens, tools, tool_choice)
+
+        log.info(
+            "LLM response model=%s strategy=%s prompt_eval_count=%s prompt_tokens=%s completion_tokens=%s",
+            model,
+            self._endpoint_strategy,
+            int(usage.get("prompt_eval_count") or 0),
+            int(usage.get("prompt_tokens") or 0),
+            int(usage.get("completion_tokens") or 0),
+        )
+        return message, usage
 
     def vision_query(
         self,
@@ -218,24 +276,21 @@ class LLMClient:
             reasoning_effort=reasoning_effort,
             max_tokens=max_tokens,
         )
-        text = response_msg.get("content") or ""
-        return text, usage
+        return str(response_msg.get("content") or ""), usage
 
     def default_model(self) -> str:
-        return os.environ.get("OUROBOROS_MODEL", "qwen2.5:14b")
+        return os.environ.get("OUROBOROS_MODEL", "llama3.2-32k:latest")
 
     def available_models(self) -> List[str]:
         configured: List[str] = []
         for key in ("OUROBOROS_MODEL", "OUROBOROS_MODEL_CODE", "OUROBOROS_MODEL_LIGHT"):
-            val = os.environ.get(key, "").strip()
-            if val and val not in configured:
-                configured.append(val)
+            value = os.environ.get(key, "").strip()
+            if value and value not in configured:
+                configured.append(value)
 
         discovered = fetch_ollama_models(self._base_url)
         for model in discovered:
             if model not in configured:
                 configured.append(model)
 
-        if not configured:
-            configured = ["qwen2.5:14b"]
-        return configured
+        return configured or ["llama3.2-32k:latest"]
