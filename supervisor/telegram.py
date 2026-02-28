@@ -424,7 +424,7 @@ def send_with_budget(chat_id: int, text: str, log_text: Optional[str] = None,
                 },
             )
             # Never drop owner-visible replies silently.
-            # If markdown/HTML delivery fails (including formatter exceptions),
+            # If markdown/HTML delivery fails (e.g. Telegram parse errors),
             # degrade to plain text chunks.
             plain = _strip_markdown(full).strip() or full.strip()
             plain_parts = split_telegram(_sanitize_telegram_text(plain), limit=3800)
