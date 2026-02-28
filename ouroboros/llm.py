@@ -65,6 +65,15 @@ class LLMClient:
             self._request_timeout_sec = max(5, int(os.environ.get("OLLAMA_REQUEST_TIMEOUT_SEC", "45")))
         except (TypeError, ValueError):
             self._request_timeout_sec = 45
+        try:
+            # Increase context window beyond Ollama default (often 4096) to avoid
+            # aggressive prompt truncation on large agent contexts.
+            self._num_ctx = max(1024, int(os.environ.get("OLLAMA_NUM_CTX", "16384")))
+        except (TypeError, ValueError):
+            self._num_ctx = 16384
+
+        prefer_native = str(os.environ.get("OLLAMA_PREFER_NATIVE_API", "1")).strip().lower()
+        self._prefer_native_api = prefer_native not in ("0", "false", "no", "off")
 
     def _headers(self) -> Dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -82,23 +91,47 @@ class LLMClient:
         tool_choice: str = "auto",
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Single LLM call. Returns: (response_message_dict, usage_dict with cost)."""
-        payload: Dict[str, Any] = {
+        # Build payloads per endpoint because Ollama applies some options (e.g. num_ctx)
+        # more reliably on native /api/chat.
+        payload_native: Dict[str, Any] = {
             "model": model,
             "messages": messages,
             "stream": False,
-            "options": {"num_predict": max_tokens},
+            "options": {
+                "num_predict": max_tokens,
+                "num_ctx": self._num_ctx,
+            },
         }
         if tools:
-            payload["tools"] = tools
+            payload_native["tools"] = tools
         if tool_choice and tool_choice != "auto":
-            payload["tool_choice"] = tool_choice
+            payload_native["tool_choice"] = tool_choice
 
-        # Prefer OpenAI-compatible endpoint; fallback to native Ollama endpoint.
-        endpoints = ["/v1/chat/completions", "/api/chat"]
+        payload_openai: Dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "stream": False,
+            "max_tokens": max_tokens,
+            # Keep options for compatibility with newer Ollama OpenAI adapters.
+            "options": {
+                "num_predict": max_tokens,
+                "num_ctx": self._num_ctx,
+            },
+            # Some adapters read num_ctx from top-level too.
+            "num_ctx": self._num_ctx,
+        }
+        if tools:
+            payload_openai["tools"] = tools
+        if tool_choice and tool_choice != "auto":
+            payload_openai["tool_choice"] = tool_choice
+
+        # Prefer native Ollama endpoint by default; OpenAI endpoint remains fallback.
+        endpoints = ["/api/chat", "/v1/chat/completions"] if self._prefer_native_api else ["/v1/chat/completions", "/api/chat"]
         endpoint_errors: List[str] = []
         data: Dict[str, Any] = {}
         for endpoint in endpoints:
             try:
+                payload = payload_native if endpoint == "/api/chat" else payload_openai
                 resp = requests.post(
                     f"{self._base_url.rstrip('/')}{endpoint}",
                     headers=self._headers(),
