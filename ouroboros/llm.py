@@ -400,7 +400,7 @@ class LLMClient:
         max_tokens: int = 1024,
         reasoning_effort: str = "low",
     ) -> Tuple[str, Dict[str, Any]]:
-        content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
+        content: List[Dict[str, Any]] = prompt
         for img in images:
             if "url" in img:
                 content.append({"type": "image_url", "image_url": {"url": img["url"]}})

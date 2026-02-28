@@ -48,12 +48,12 @@ def _build_user_content(task: Dict[str, Any]) -> Any:
     if not combined_text:
         combined_text = "Analyze the screenshot"
 
-    parts.append({"type": "text", "text": combined_text})
-    parts.append({
-        "type": "image_url",
-        "image_url": {"url": f"data:{image_mime};base64,{image_b64}"}
-    })
-    return parts
+    #parts.append({"type": "text", "text": combined_text})
+    #parts.append({
+    #    "type": "image_url",
+    #    "image_url": {"url": f"data:{image_mime};base64,{image_b64}"}
+    #})
+    return combined_text
 
 
 def _build_runtime_section(env: Any, task: Dict[str, Any]) -> str:
@@ -340,22 +340,15 @@ def build_llm_messages(
     messages: List[Dict[str, Any]] = [
         {
             "role": "system",
-            "content": [
-                {
-                    "type": "text",
-                    "text": static_text,
-                    "cache_control": {"type": "ephemeral", "ttl": "1h"},
-                },
-                {
-                    "type": "text",
-                    "text": semi_stable_text,
-                    "cache_control": {"type": "ephemeral"},
-                },
-                {
-                    "type": "text",
-                    "text": dynamic_text,
-                },
-            ],
+            "content": static_text
+        },
+        {
+            "role": "system",
+            "content": semi_stable_text
+        },
+        {
+            "role": "system",
+            "content": dynamic_text
         },
         {"role": "user", "content": _build_user_content(task)},
     ]
