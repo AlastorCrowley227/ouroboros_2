@@ -1,5 +1,5 @@
 # =============================================================================
-# llm.py (финальная версия, использующая /api/chat по умолчанию)
+# llm.py (финальная версия с прогревом и разделением эндпоинтов)
 # =============================================================================
 """
 Ouroboros — local LLM client via Ollama.
@@ -116,6 +116,26 @@ class LLMClient:
         resp.raise_for_status()
         return resp.json()
 
+    def warmup(self, model: str) -> None:
+        """
+        Загружает модель с нужным контекстом через /api/chat.
+        Выполняется до основного цикла, чтобы модель была в памяти с правильным num_ctx.
+        """
+        try:
+            payload = {
+                "model": model,
+                "messages": [{"role": "user", "content": "Hello"}],
+                "stream": False,
+                "options": {
+                    "num_predict": 5,
+                    "num_ctx": self._num_ctx,
+                },
+            }
+            self._post_chat_payload("/api/chat", payload)
+            log.info(f"Model {model} warmed up with context {self._num_ctx}")
+        except Exception as e:
+            log.warning(f"Warmup failed for {model}: {e}")
+
     def chat(
         self,
         messages: List[Dict[str, Any]],
@@ -127,27 +147,42 @@ class LLMClient:
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """
         Вызов LLM.
-        Всегда пытаемся использовать /api/chat, так как он надёжнее принимает num_ctx.
-        Если tools присутствуют и /api/chat вернул ошибку, пробуем /v1/chat/completions.
+        Если есть tools — используем /v1/chat/completions (openai-совместимый),
+        иначе — /api/chat (надёжнее принимает num_ctx).
+        Перед вызовом с инструментами рекомендуется выполнить warmup для загрузки модели.
         """
-        # Базовый payload для /api/chat
-        payload_native = {
-            "model": model,
-            "messages": messages,
-            "stream": False,
-            "options": {
-                "num_predict": max_tokens,
-                "num_ctx": self._num_ctx,
-            },
-        }
         if tools:
-            payload_native["tools"] = tools
-        if tool_choice and tool_choice != "auto":
-            payload_native["tool_choice"] = tool_choice
-
-        try:
-            data = self._post_chat_payload("/api/chat", payload_native)
-            # Нормализуем ответ в openai-формат
+            # Для инструментов используем openai-совместимый эндпоинт
+            payload = {
+                "model": model,
+                "messages": messages,
+                "stream": False,
+                "options": {
+                    "num_predict": max_tokens,
+                    "num_ctx": self._num_ctx,
+                },
+                "tools": tools,
+            }
+            if tool_choice and tool_choice != "auto":
+                payload["tool_choice"] = tool_choice
+            data = self._post_chat_payload("/v1/chat/completions", payload)
+            usage = data.get("usage") or {}
+            choices = data.get("choices") or [{}]
+            msg = (choices[0] if choices else {}).get("message") or {}
+            usage.setdefault("cost", 0.0)
+            return msg, usage
+        else:
+            # Без инструментов используем /api/chat — он гарантированно принимает num_ctx
+            payload = {
+                "model": model,
+                "messages": messages,
+                "stream": False,
+                "options": {
+                    "num_predict": max_tokens,
+                    "num_ctx": self._num_ctx,
+                },
+            }
+            data = self._post_chat_payload("/api/chat", payload)
             message = data.get("message") or {}
             usage = {
                 "prompt_tokens": data.get("prompt_eval_count", 0),
@@ -156,32 +191,6 @@ class LLMClient:
                 "cost": 0.0,
             }
             return message, usage
-        except Exception as e:
-            # Если tools есть и произошла ошибка, возможно /api/chat не поддерживает tools в этой версии Ollama
-            if tools:
-                log.warning("/api/chat failed for tools request, falling back to /v1/chat/completions: %s", e)
-                # openai-совместимый payload
-                payload_openai = {
-                    "model": model,
-                    "messages": messages,
-                    "stream": False,
-                    "options": {
-                        "num_predict": max_tokens,
-                        "num_ctx": self._num_ctx,
-                    },
-                    "tools": tools,
-                }
-                if tool_choice and tool_choice != "auto":
-                    payload_openai["tool_choice"] = tool_choice
-                data = self._post_chat_payload("/v1/chat/completions", payload_openai)
-                usage = data.get("usage") or {}
-                choices = data.get("choices") or [{}]
-                msg = (choices[0] if choices else {}).get("message") or {}
-                usage.setdefault("cost", 0.0)
-                return msg, usage
-            else:
-                # Перевыбрасываем, если нет tools
-                raise RuntimeError(f"Ollama chat call to /api/chat failed: {e}") from e
 
     def vision_query(
         self,
