@@ -402,9 +402,16 @@ def send_with_budget(chat_id: int, text: str, log_text: Optional[str] = None,
     if _text.strip() in ("", "\u200b"):
         return
     full = _text
+    tg = get_tg()
 
     if fmt == "markdown":
-        ok, err = _send_markdown_telegram(chat_id, full)
+        ok = False
+        err = "unknown"
+        try:
+            ok, err = _send_markdown_telegram(chat_id, full)
+        except Exception as e:
+            err = f"markdown_pipeline_exception: {type(e).__name__}: {e}"
+
         if not ok:
             append_jsonl(
                 DRIVE_ROOT / "logs" / "supervisor.jsonl",
@@ -416,9 +423,39 @@ def send_with_budget(chat_id: int, text: str, log_text: Optional[str] = None,
                     "format": "markdown",
                 },
             )
+            # Never drop owner-visible replies silently.
+            # If markdown/HTML delivery fails (including formatter exceptions),
+            # degrade to plain text chunks.
+            plain = _strip_markdown(full).strip() or full.strip()
+            plain_parts = split_telegram(_sanitize_telegram_text(plain), limit=3800)
+            sent_any = False
+            for idx, part in enumerate(plain_parts):
+                if not part.strip():
+                    continue
+                ok_plain, err_plain = tg.send_message(chat_id, part)
+                if not ok_plain:
+                    append_jsonl(
+                        DRIVE_ROOT / "logs" / "supervisor.jsonl",
+                        {
+                            "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                            "type": "telegram_send_error",
+                            "chat_id": chat_id,
+                            "part_index": idx,
+                            "error": err_plain,
+                            "format": "plain_fallback",
+                        },
+                    )
+                    break
+                sent_any = True
+
+            if not sent_any:
+                tg.send_message(
+                    chat_id,
+                    "⚠️ Не удалось отправить ответ в Telegram (форматирование/доставка). "
+                    "Смотри logs/supervisor.jsonl для деталей.",
+                )
         return
 
-    tg = get_tg()
     for idx, part in enumerate(split_telegram(full)):
         ok, err = tg.send_message(chat_id, part)
         if not ok:
