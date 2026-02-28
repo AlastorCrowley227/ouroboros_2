@@ -1,5 +1,5 @@
 # =============================================================================
-# llm.py (полностью исправленная версия)
+# llm.py (финальная версия, использующая /api/chat по умолчанию)
 # =============================================================================
 """
 Ouroboros — local LLM client via Ollama.
@@ -69,13 +69,10 @@ class LLMClient:
         except (TypeError, ValueError):
             self._request_timeout_sec = 45
         try:
-            # Increase context window beyond Ollama default (often 4096) to avoid
-            # aggressive prompt truncation on large agent contexts.
+            # Увеличиваем контекст, чтобы избежать обрезания
             self._num_ctx = max(1024, int(os.environ.get("OLLAMA_NUM_CTX", "16384")))
         except (TypeError, ValueError):
             self._num_ctx = 16384
-        # Определяем, какой эндпоинт использовать первым (native /api/chat или openai-compat)
-        self._prefer_native_api = os.environ.get("OLLAMA_PREFER_NATIVE_API", "0").lower() in ("1", "true", "yes")
 
     def _headers(self) -> Dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -109,6 +106,7 @@ class LLMClient:
             body = json.dumps(safe_payload)
             log.warning("LLM payload contained non-serializable objects; coerced to JSON-safe values")
 
+        log.debug("Sending to %s: %s", endpoint, body[:500])
         resp = requests.post(
             url,
             headers=self._headers(),
@@ -127,10 +125,13 @@ class LLMClient:
         max_tokens: int = 16384,
         tool_choice: str = "auto",
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        """Single LLM call. Returns: (response_message_dict, usage_dict with cost)."""
-        # Build payloads per endpoint because Ollama applies some options (e.g. num_ctx)
-        # more reliably on native /api/chat.
-        payload_native: Dict[str, Any] = {
+        """
+        Вызов LLM.
+        Всегда пытаемся использовать /api/chat, так как он надёжнее принимает num_ctx.
+        Если tools присутствуют и /api/chat вернул ошибку, пробуем /v1/chat/completions.
+        """
+        # Базовый payload для /api/chat
+        payload_native = {
             "model": model,
             "messages": messages,
             "stream": False,
@@ -144,63 +145,43 @@ class LLMClient:
         if tool_choice and tool_choice != "auto":
             payload_native["tool_choice"] = tool_choice
 
-        payload_openai: Dict[str, Any] = {
-            "model": model,
-            "messages": messages,
-            "stream": False,
-            "options": {
-                "num_predict": max_tokens,
-                "num_ctx": self._num_ctx,
-            },
-        }
-        if tools:
-            payload_openai["tools"] = tools
-        if tool_choice and tool_choice != "auto":
-            payload_openai["tool_choice"] = tool_choice
-
-        # Определяем порядок эндпоинтов согласно настройке
-        endpoints = ["/api/chat", "/v1/chat/completions"] if self._prefer_native_api else ["/v1/chat/completions", "/api/chat"]
-        endpoint_errors: List[str] = []
-        data: Dict[str, Any] = {}
-        for endpoint in endpoints:
-            try:
-                payload = payload_native if endpoint == "/api/chat" else payload_openai
-                resp = requests.post(
-                    f"{self._base_url.rstrip('/')}{endpoint}",
-                    headers=self._headers(),
-                    data=json.dumps(payload),
-                    timeout=(10, self._request_timeout_sec),
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                if endpoint == "/api/chat":
-                    # normalize native format to chat-completions-like response
-                    message = data.get("message") or {}
-                    data = {
-                        "choices": [{"message": message}],
-                        "usage": {
-                            "prompt_tokens": data.get("prompt_eval_count", 0),
-                            "completion_tokens": data.get("eval_count", 0),
-                            "total_tokens": (data.get("prompt_eval_count", 0) + data.get("eval_count", 0)),
-                        },
-                    }
-                break
-            except Exception as e:
-                endpoint_errors.append(f"{endpoint}: {type(e).__name__}: {e}")
-                continue
-
-        if not data:
-            errs = " | ".join(endpoint_errors) if endpoint_errors else "unknown"
-            raise RuntimeError(
-                "Ollama chat call failed "
-                f"(base_url={self._base_url}, timeout={self._request_timeout_sec}s): {errs}"
-            )
-
-        usage = data.get("usage") or {}
-        choices = data.get("choices") or [{}]
-        msg = (choices[0] if choices else {}).get("message") or {}
-        usage.setdefault("cost", 0.0)
-        return msg, usage
+        try:
+            data = self._post_chat_payload("/api/chat", payload_native)
+            # Нормализуем ответ в openai-формат
+            message = data.get("message") or {}
+            usage = {
+                "prompt_tokens": data.get("prompt_eval_count", 0),
+                "completion_tokens": data.get("eval_count", 0),
+                "total_tokens": (data.get("prompt_eval_count", 0) + data.get("eval_count", 0)),
+                "cost": 0.0,
+            }
+            return message, usage
+        except Exception as e:
+            # Если tools есть и произошла ошибка, возможно /api/chat не поддерживает tools в этой версии Ollama
+            if tools:
+                log.warning("/api/chat failed for tools request, falling back to /v1/chat/completions: %s", e)
+                # openai-совместимый payload
+                payload_openai = {
+                    "model": model,
+                    "messages": messages,
+                    "stream": False,
+                    "options": {
+                        "num_predict": max_tokens,
+                        "num_ctx": self._num_ctx,
+                    },
+                    "tools": tools,
+                }
+                if tool_choice and tool_choice != "auto":
+                    payload_openai["tool_choice"] = tool_choice
+                data = self._post_chat_payload("/v1/chat/completions", payload_openai)
+                usage = data.get("usage") or {}
+                choices = data.get("choices") or [{}]
+                msg = (choices[0] if choices else {}).get("message") or {}
+                usage.setdefault("cost", 0.0)
+                return msg, usage
+            else:
+                # Перевыбрасываем, если нет tools
+                raise RuntimeError(f"Ollama chat call to /api/chat failed: {e}") from e
 
     def vision_query(
         self,
