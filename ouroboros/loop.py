@@ -1,3 +1,6 @@
+# =============================================================================
+# loop.py (исправленная версия с парсингом JSON-тулколлов)
+# =============================================================================
 """
 Ouroboros — LLM tool loop.
 
@@ -526,6 +529,47 @@ def _drain_incoming_messages(
                     pass
 
 
+def _try_parse_json_toolcall(text: str) -> Optional[List[Dict[str, Any]]]:
+    """
+    Attempt to parse a JSON object from the text and convert it to a tool call.
+    Supports two formats:
+      - {"name": "...", "arguments": {...}}
+      - {"function_name": "...", "arguments": {...}}
+    Returns a list with a single tool call dictionary (OpenAI format) or None.
+    """
+    text = text.strip()
+    if not (text.startswith('{') and text.endswith('}')):
+        return None
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+
+    # Generate a stable but unique ID
+    import hashlib
+    call_id = "call_auto_" + hashlib.md5(text.encode()).hexdigest()[:8]
+
+    if "name" in data and "arguments" in data:
+        return [{
+            "id": call_id,
+            "type": "function",
+            "function": {
+                "name": data["name"],
+                "arguments": json.dumps(data["arguments"], ensure_ascii=False)
+            }
+        }]
+    if "function_name" in data and "arguments" in data:
+        return [{
+            "id": call_id,
+            "type": "function",
+            "function": {
+                "name": data["function_name"],
+                "arguments": json.dumps(data["arguments"], ensure_ascii=False)
+            }
+        }]
+    return None
+
+
 def run_llm_loop(
     messages: List[Dict[str, Any]],
     tools: ToolRegistry,
@@ -679,7 +723,17 @@ def run_llm_loop(
                 # Fallback succeeded — continue processing with this msg
                 # (don't return — fall through to tool_calls processing below)
 
+            # --- Parse potential JSON tool call from text content ---
             tool_calls = msg.get("tool_calls") or []
+            if not tool_calls:
+                content = msg.get("content")
+                if content:
+                    parsed = _try_parse_json_toolcall(_message_content_to_text(content))
+                    if parsed:
+                        tool_calls = parsed
+                        msg["tool_calls"] = tool_calls
+                        msg["content"] = ""  # очищаем, чтобы не дублировать JSON как текст
+
             content = msg.get("content")
             content_text = _message_content_to_text(content)
             # No tool calls — final response
