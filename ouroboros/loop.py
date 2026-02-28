@@ -616,12 +616,18 @@ def run_llm_loop(
 
             # Fallback to another model if primary model returns empty responses
             if msg is None:
-                # Configurable fallback priority list (Bible P3: no hardcoded behavior)
-                fallback_list_raw = os.environ.get(
-                    "OUROBOROS_MODEL_FALLBACK_LIST",
-                    "qwen2.5:14b,llama3.1:8b,mistral:7b"
-                )
-                fallback_candidates = [m.strip() for m in fallback_list_raw.split(",") if m.strip()]
+                # Configurable fallback priority list.
+                # If explicit list is not set, derive candidates from configured/discovered models
+                # exposed by the active LLM client. This avoids surprising hardcoded defaults.
+                fallback_list_raw = os.environ.get("OUROBOROS_MODEL_FALLBACK_LIST", "").strip()
+                if fallback_list_raw:
+                    fallback_candidates = [m.strip() for m in fallback_list_raw.split(",") if m.strip()]
+                else:
+                    try:
+                        fallback_candidates = llm.available_models()
+                    except Exception:
+                        log.warning("Failed to derive fallback model list from LLM client", exc_info=True)
+                        fallback_candidates = []
                 fallback_model = None
                 for candidate in fallback_candidates:
                     if candidate != active_model:
