@@ -13,7 +13,7 @@ import requests
 from ouroboros.tools.registry import ToolContext, ToolEntry
 
 log = logging.getLogger(__name__)
-
+log.debug("github loaded")
 
 def _vcs_platform() -> str:
     return str(os.environ.get("OUROBOROS_VCS_PLATFORM", "github")).strip().lower() or "github"
