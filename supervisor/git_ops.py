@@ -52,7 +52,7 @@ def init(repo_dir: pathlib.Path, drive_root: pathlib.Path, remote_url: str,
 # ---------------------------------------------------------------------------
 
 def git_capture(cmd: List[str]) -> Tuple[int, str, str]:
-    print("git_capture"))
+    print("git_capture")
     r = subprocess.run(cmd, cwd=str(REPO_DIR), capture_output=True, text=True)
     return r.returncode, (r.stdout or "").strip(), (r.stderr or "").strip()
 
