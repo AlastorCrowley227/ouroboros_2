@@ -13,15 +13,18 @@ from ouroboros.tools.registry import ToolContext, ToolEntry
 from ouroboros.utils import utc_now_iso, write_text, safe_relpath, run_cmd
 
 log = logging.getLogger(__name__)
-
+log.debug("git loaded.")
 
 def _vcs_platform() -> str:
+    log.debug("vcs_platform")
+    log.debug(str(os.environ.get("OUROBOROS_VCS_PLATFORM", "github")).strip().lower() or "github")
     return str(os.environ.get("OUROBOROS_VCS_PLATFORM", "github")).strip().lower() or "github"
 
 
 # --- Git lock ---
 
 def _acquire_git_lock(ctx: ToolContext, timeout_sec: int = 120) -> pathlib.Path:
+    log.debug("acquire_git_lock")
     lock_dir = ctx.drive_path("locks")
     lock_dir.mkdir(parents=True, exist_ok=True)
     lock_path = lock_dir / "git.lock"
@@ -49,6 +52,7 @@ def _acquire_git_lock(ctx: ToolContext, timeout_sec: int = 120) -> pathlib.Path:
 
 
 def _release_git_lock(lock_path: pathlib.Path) -> None:
+    log.debug("release_git_lock")
     try:
         lock_path.unlink()
     except FileNotFoundError:
@@ -61,6 +65,7 @@ MAX_TEST_OUTPUT = 8000
 
 def _run_pre_push_tests(ctx: ToolContext) -> Optional[str]:
     """Run pre-push tests if enabled. Returns None if tests pass, error string if they fail."""
+    log.debug("run_pre_push_tests")
     # Guard against ctx=None
     if ctx is None:
         log.warning("_run_pre_push_tests called with ctx=None, skipping tests")
@@ -102,6 +107,7 @@ def _run_pre_push_tests(ctx: ToolContext) -> Optional[str]:
 
 
 def _git_push_with_tests(ctx: ToolContext) -> Optional[str]:
+    log.debug("git_push_with_tests")
     """Run pre-push tests, then pull --rebase and push. Returns None on success, error string on failure."""
     test_error = _run_pre_push_tests(ctx)
     if test_error:
@@ -129,6 +135,7 @@ def _git_push_with_tests(ctx: ToolContext) -> Optional[str]:
 # --- Tool implementations ---
 
 def _repo_write_commit(ctx: ToolContext, path: str, content: str, commit_message: str) -> str:
+    log.debug("repo_write_commit")
     ctx.last_push_succeeded = False
     if not commit_message.strip():
         return "⚠️ ERROR: commit_message must be non-empty."
@@ -161,6 +168,7 @@ def _repo_write_commit(ctx: ToolContext, path: str, content: str, commit_message
 
 
 def _repo_commit_push(ctx: ToolContext, commit_message: str, paths: Optional[List[str]] = None) -> str:
+    log.debug("repo_commit_push")
     ctx.last_push_succeeded = False
     if not commit_message.strip():
         return "⚠️ ERROR: commit_message must be non-empty."
@@ -213,6 +221,7 @@ def _repo_commit_push(ctx: ToolContext, commit_message: str, paths: Optional[Lis
 
 
 def _git_status(ctx: ToolContext) -> str:
+    log.debug("git_status")
     try:
         return run_cmd(["git", "status", "--porcelain"], cwd=ctx.repo_dir)
     except Exception as e:
@@ -220,6 +229,7 @@ def _git_status(ctx: ToolContext) -> str:
 
 
 def _git_diff(ctx: ToolContext, staged: bool = False) -> str:
+    log.debug("git_diff")
     try:
         cmd = ["git", "diff"]
         if staged:
@@ -230,6 +240,7 @@ def _git_diff(ctx: ToolContext, staged: bool = False) -> str:
 
 
 def get_tools() -> List[ToolEntry]:
+    log.debug("get_tools")
     return [
         ToolEntry("repo_write_commit", {
             "name": "repo_write_commit",
