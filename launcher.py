@@ -9,8 +9,7 @@ import os, sys, time, uuid, pathlib, subprocess, datetime, threading, queue as _
 from typing import Any, Dict, List, Optional, Tuple
 
 log = logging.getLogger(__name__)
-log.setLevel(logging.DEBUG)
-log.debug("started")
+log.info("started")
 # ----------------------------
 # 0) Install launcher deps
 # ----------------------------
