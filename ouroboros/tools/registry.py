@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import sys
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
@@ -98,6 +99,9 @@ class ToolRegistry:
     export get_tools() -> List[ToolEntry].
     """
 
+    # Class-level cache to avoid re-executing get_tools() on repeated imports
+    _module_tools_cache: Dict[str, List[ToolEntry]] = {}
+
     def __init__(self, repo_dir: pathlib.Path, drive_root: pathlib.Path):
         self._entries: Dict[str, ToolEntry] = {}
         self._ctx = ToolContext(repo_dir=repo_dir, drive_root=drive_root)
@@ -108,13 +112,25 @@ class ToolRegistry:
         import importlib
         import pkgutil
         import ouroboros.tools as tools_pkg
+
         for _importer, modname, _ispkg in pkgutil.iter_modules(tools_pkg.__path__):
             if modname.startswith("_") or modname == "registry":
                 continue
+
+            # Check if we already have cached tools for this module
+            if modname in self._module_tools_cache:
+                # Use cached tools without importing again
+                for entry in self._module_tools_cache[modname]:
+                    self._entries[entry.name] = entry
+                continue
+
             try:
                 mod = importlib.import_module(f"ouroboros.tools.{modname}")
                 if hasattr(mod, "get_tools"):
-                    for entry in mod.get_tools():
+                    module_tools = mod.get_tools()
+                    # Store in cache
+                    self._module_tools_cache[modname] = module_tools
+                    for entry in module_tools:
                         self._entries[entry.name] = entry
             except Exception:
                 import logging
