@@ -9,7 +9,7 @@ import os, sys, time, uuid, pathlib, subprocess, datetime, threading, queue as _
 from typing import Any, Dict, List, Optional, Tuple
 
 log = logging.getLogger(__name__)
-print("started")
+
 # ----------------------------
 # 0) Install launcher deps
 # ----------------------------
@@ -199,6 +199,13 @@ from supervisor.events import dispatch_event
 ensure_repo_present()
 ok, msg = safe_restart(reason="bootstrap", unsynced_policy="rescue_and_reset")
 assert ok, f"Bootstrap failed: {msg}"
+
+# --- Одноразовое авто‑спасение под блокировкой ---
+from supervisor import lock
+lock.init(DRIVE_ROOT)
+from supervisor.git_ops import ensure_clean_repo
+ensure_clean_repo()
+# ------------------------------------------------
 
 # ----------------------------
 # 6) Start workers
