@@ -22,7 +22,7 @@ from supervisor.state import (
 )
 
 log = logging.getLogger(__name__)
-print("git_ops loaded")
+
 
 # ---------------------------------------------------------------------------
 # Module-level config (set via init())
@@ -32,33 +32,31 @@ DRIVE_ROOT: pathlib.Path = pathlib.Path.home() / ".ouroboros"
 REMOTE_URL: str = ""
 BRANCH_DEV: str = "ouroboros"
 BRANCH_STABLE: str = "ouroboros-stable"
-VCS_PLATFORM: str = "git"
+VCS_PLATFORM: str = "github"
 
 
 def init(repo_dir: pathlib.Path, drive_root: pathlib.Path, remote_url: str,
          branch_dev: str = "ouroboros", branch_stable: str = "ouroboros-stable",
-         vcs_platform: str = "git") -> None:
+         vcs_platform: str = "github") -> None:
     global REPO_DIR, DRIVE_ROOT, REMOTE_URL, BRANCH_DEV, BRANCH_STABLE, VCS_PLATFORM
     REPO_DIR = repo_dir
     DRIVE_ROOT = drive_root
     REMOTE_URL = remote_url
     BRANCH_DEV = branch_dev
     BRANCH_STABLE = branch_stable
-    VCS_PLATFORM = str(vcs_platform or "git").strip().lower()
-    print("init")
+    VCS_PLATFORM = str(vcs_platform or "github").strip().lower()
+
 
 # ---------------------------------------------------------------------------
 # Git helpers
 # ---------------------------------------------------------------------------
 
 def git_capture(cmd: List[str]) -> Tuple[int, str, str]:
-    print("git_capture")
     r = subprocess.run(cmd, cwd=str(REPO_DIR), capture_output=True, text=True)
     return r.returncode, (r.stdout or "").strip(), (r.stderr or "").strip()
 
 
 def ensure_repo_present() -> None:
-    print("ensure_repo_present")
     if VCS_PLATFORM == "git":
         REPO_DIR.mkdir(parents=True, exist_ok=True)
         if not (REPO_DIR / ".git").exists():
@@ -88,7 +86,6 @@ def ensure_repo_present() -> None:
 # ---------------------------------------------------------------------------
 
 def _collect_repo_sync_state() -> Dict[str, Any]:
-    print("collect_repo_sync_state")
     state: Dict[str, Any] = {
         "current_branch": "unknown",
         "dirty_lines": [],
@@ -134,7 +131,6 @@ def _copy_untracked_for_rescue(dst_root: pathlib.Path, max_files: int = 200,
     out: Dict[str, Any] = {
         "copied_files": 0, "skipped_files": 0, "copied_bytes": 0, "truncated": False,
     }
-    print("copy_untracked_for_rescue")
     rc, txt, err = git_capture(["git", "ls-files", "--others", "--exclude-standard"])
     if rc != 0:
         out["error"] = err or "git ls-files failed"
@@ -179,7 +175,6 @@ def _copy_untracked_for_rescue(dst_root: pathlib.Path, max_files: int = 200,
 
 def _create_rescue_snapshot(branch: str, reason: str,
                              repo_state: Dict[str, Any]) -> Dict[str, Any]:
-    print("create_rescue_snapshot")
     now = datetime.datetime.now(datetime.timezone.utc)
     ts = now.strftime("%Y%m%d_%H%M%S")
     rescue_dir = DRIVE_ROOT / "archive" / "rescue" / f"{ts}_{uuid.uuid4().hex[:8]}"
@@ -227,7 +222,6 @@ def _create_rescue_snapshot(branch: str, reason: str,
 
 def checkout_and_reset(branch: str, reason: str = "unspecified",
                        unsynced_policy: str = "ignore") -> Tuple[bool, str]:
-    print("checkout_and_reset")
     if VCS_PLATFORM != "git":
         rc, _, err = git_capture(["git", "fetch", "origin"])
     else:
@@ -355,7 +349,6 @@ def checkout_and_reset(branch: str, reason: str = "unspecified",
 # ---------------------------------------------------------------------------
 
 def sync_runtime_dependencies(reason: str) -> Tuple[bool, str]:
-    print("sync_runtime_dependencies")
     req_path = REPO_DIR / "requirements.txt"
     cmd: List[str] = [sys.executable, "-m", "pip", "install", "-q"]
     source = ""
@@ -388,7 +381,6 @@ def sync_runtime_dependencies(reason: str) -> Tuple[bool, str]:
 
 
 def import_test() -> Dict[str, Any]:
-    print("import_test")
     r = subprocess.run(
         ["python3", "-c", "import ouroboros, ouroboros.agent; print('import_ok')"],
         cwd=str(REPO_DIR),
@@ -406,7 +398,6 @@ def safe_restart(
     reason: str,
     unsynced_policy: str = "rescue_and_reset",
 ) -> Tuple[bool, str]:
-    print("safe_restart")
     """
     Attempt to checkout dev branch, sync deps, and verify imports.
     Falls back to stable branch if dev fails.
@@ -466,3 +457,39 @@ def safe_restart(
 
     # Both branches failed
     return False, f"Both branches failed import (dev and stable)"
+
+
+# ---------------------------------------------------------------------------
+# Ensure clean repo before workers start
+# ---------------------------------------------------------------------------
+
+def ensure_clean_repo(commit_message: str = "auto-rescue: uncommitted changes before workers start") -> None:
+    """
+    Зафиксировать все изменения в отслеживаемых файлах, если репозиторий не чист.
+    Использует глобальную блокировку Git.
+    """
+    from supervisor import lock  # локальный импорт для избежания циклов
+
+    lock_path = lock.acquire_git_lock()
+    try:
+        rc, stdout, stderr = git_capture(["git", "status", "--porcelain"])
+        if rc != 0:
+            log.warning("git status failed in ensure_clean_repo: %s", stderr)
+            return
+        if not stdout.strip():
+            return
+
+        rc, _, stderr = git_capture(["git", "add", "-u"])
+        if rc != 0:
+            log.warning("git add -u failed in ensure_clean_repo: %s", stderr)
+            return
+
+        rc, stdout2, stderr = git_capture(["git", "status", "--porcelain"])
+        if rc != 0 or not stdout2.strip():
+            return
+
+        rc, _, stderr = git_capture(["git", "commit", "-m", commit_message])
+        if rc != 0:
+            log.warning("git commit failed in ensure_clean_repo: %s", stderr)
+    finally:
+        lock.release_git_lock(lock_path)
