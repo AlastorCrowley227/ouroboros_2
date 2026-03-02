@@ -457,3 +457,39 @@ def safe_restart(
 
     # Both branches failed
     return False, f"Both branches failed import (dev and stable)"
+
+
+# ---------------------------------------------------------------------------
+# Ensure clean repo before workers start
+# ---------------------------------------------------------------------------
+
+def ensure_clean_repo(commit_message: str = "auto-rescue: uncommitted changes before workers start") -> None:
+    """
+    Зафиксировать все изменения в отслеживаемых файлах, если репозиторий не чист.
+    Использует глобальную блокировку Git.
+    """
+    from supervisor import lock  # локальный импорт для избежания циклов
+
+    lock_path = lock.acquire_git_lock()
+    try:
+        rc, stdout, stderr = git_capture(["git", "status", "--porcelain"])
+        if rc != 0:
+            log.warning("git status failed in ensure_clean_repo: %s", stderr)
+            return
+        if not stdout.strip():
+            return
+
+        rc, _, stderr = git_capture(["git", "add", "-u"])
+        if rc != 0:
+            log.warning("git add -u failed in ensure_clean_repo: %s", stderr)
+            return
+
+        rc, stdout2, stderr = git_capture(["git", "status", "--porcelain"])
+        if rc != 0 or not stdout2.strip():
+            return
+
+        rc, _, stderr = git_capture(["git", "commit", "-m", commit_message])
+        if rc != 0:
+            log.warning("git commit failed in ensure_clean_repo: %s", stderr)
+    finally:
+        lock.release_git_lock(lock_path)
