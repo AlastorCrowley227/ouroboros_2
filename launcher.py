@@ -200,6 +200,13 @@ ensure_repo_present()
 ok, msg = safe_restart(reason="bootstrap", unsynced_policy="rescue_and_reset")
 assert ok, f"Bootstrap failed: {msg}"
 
+# --- Одноразовое авто‑спасение под блокировкой ---
+from supervisor import lock
+lock.init(DRIVE_ROOT)
+from supervisor.git_ops import ensure_clean_repo
+ensure_clean_repo()
+# ------------------------------------------------
+
 # ----------------------------
 # 6) Start workers
 # ----------------------------
