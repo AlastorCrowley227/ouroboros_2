@@ -138,10 +138,7 @@ class OuroborosAgent:
             pass
 
     def _check_uncommitted_changes(self) -> Tuple[dict, int]:
-        """Check for uncommitted changes and attempt auto-rescue commit & push."""
-        import re
-        import subprocess
-        vcs_platform = str(os.environ.get("OUROBOROS_VCS_PLATFORM", "github")).strip().lower()
+        """Проверить незакоммиченные изменения. Возвращает (info, issue_count)."""
         try:
             result = subprocess.run(
                 ["git", "status", "--porcelain"],
@@ -150,46 +147,10 @@ class OuroborosAgent:
             )
             dirty_files = [l.strip() for l in result.stdout.strip().split('\n') if l.strip()]
             if dirty_files:
-                # Auto-rescue: commit and push
-                auto_committed = False
-                try:
-                    # Only stage tracked files (not secrets/notebooks)
-                    subprocess.run(["git", "add", "-u"], cwd=str(self.env.repo_dir), timeout=10, check=True)
-                    subprocess.run(
-                        ["git", "commit", "-m", "auto-rescue: uncommitted changes detected on startup"],
-                        cwd=str(self.env.repo_dir), timeout=30, check=True
-                    )
-                    # Validate branch name
-                    if not re.match(r'^[a-zA-Z0-9_/-]+$', self.env.branch_dev):
-                        raise ValueError(f"Invalid branch name: {self.env.branch_dev}")
-                    if vcs_platform != "git":
-                        # Pull with rebase before push
-                        subprocess.run(
-                            ["git", "pull", "--rebase", "origin", self.env.branch_dev],
-                            cwd=str(self.env.repo_dir), timeout=60, check=True
-                        )
-                        # Push
-                        try:
-                            subprocess.run(
-                                ["git", "push", "origin", self.env.branch_dev],
-                                cwd=str(self.env.repo_dir), timeout=60, check=True
-                            )
-                            auto_committed = True
-                            log.warning(f"Auto-rescued {len(dirty_files)} uncommitted files on startup")
-                        except subprocess.CalledProcessError:
-                            # If push fails, undo the commit
-                            subprocess.run(
-                                ["git", "reset", "HEAD~1"],
-                                cwd=str(self.env.repo_dir), timeout=10, check=True
-                            )
-                            raise
-                    else:
-                        auto_committed = True
-                except Exception as e:
-                    log.warning(f"Failed to auto-rescue uncommitted changes: {e}", exc_info=True)
                 return {
-                    "status": "warning", "files": dirty_files[:20],
-                    "auto_committed": auto_committed,
+                    "status": "warning",
+                    "files": dirty_files[:20],
+                    "auto_committed": False,
                 }, 1
             else:
                 return {"status": "ok"}, 0
